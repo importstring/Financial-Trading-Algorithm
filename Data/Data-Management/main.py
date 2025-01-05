@@ -2,27 +2,39 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 import os
-import concurrent.futures
-from typing import Optional, List
+from typing import List
 import time
 from functools import lru_cache
 import numpy as np
 
 # Define paths
 data_directory = "/Users/simon/Financial-Trading-Algorithm/Data"
-tickers_list = os.path.join(data_directory, 'Info', 'Tickers')
+tickers_dir = os.path.join(data_directory, 'Info', 'Tickers')
 logs_path = os.path.join(data_directory, 'Info', 'Logs')
 save_directory = os.path.join(data_directory, 'Stock-Data')
 
 
 def filter_tickers():
-    # Read only necessary columns
-    tickers_df = pd.read_csv(f"{tickers_list}/tickers.csv", usecols=['Name'])
+    filtered_path = f"{tickers_dir}/tickers-filtered.csv"
     
-    # More efficient DataFrame creation
-    filtered_df = pd.DataFrame({'Ticker': tickers_df['Name'].values})
-    
-    filtered_df.to_csv(f"{tickers_list}/tickers-filtered.csv", index=False)
+    # Check if file exists and is not empty
+    try:
+        if os.path.getsize(filtered_path) > 0:
+            # Read existing tickers from filtered file
+            filtered_df = pd.read_csv(filtered_path)
+            return filtered_df['Ticker'].tolist()
+        else:
+            # If empty, create new filtered list
+            tickers_df = pd.read_csv(f"{tickers_dir}/tickers.csv", usecols=['Name'])
+            filtered_df = pd.DataFrame({'Ticker': tickers_df['Name'].values})
+            filtered_df.to_csv(filtered_path, index=False)
+            return filtered_df['Ticker'].tolist()
+    except FileNotFoundError:
+        # If file doesn't exist, create it
+        tickers_df = pd.read_csv(f"{tickers_dir}/tickers.csv", usecols=['Name'])
+        filtered_df = pd.DataFrame({'Ticker': tickers_df['Name'].values})
+        filtered_df.to_csv(filtered_path, index=False)
+        return filtered_df['Ticker'].tolist()
 
 def create_log():
     # Create log file with current timestamp
@@ -43,39 +55,48 @@ def get_cached_ticker(ticker: str) -> yf.Ticker:
     return yf.Ticker(ticker)
 
 def download_batch(tickers: List[str]) -> List[str]:
-    """Download data for a batch of stock tickers."""
     results = []
-    # Download data for multiple tickers at once
+    save_directory = "/Users/simon/Financial-Trading-Algorithm/Data/Stock-Data"  # Define this appropriately
+
     data = yf.download(tickers, period="max", auto_adjust=True, group_by='ticker')
     
     for ticker in tickers:
         try:
-            if isinstance(data, pd.DataFrame):
-                ticker_data = data
+            if isinstance(data, pd.DataFrame) and isinstance(data.columns, pd.MultiIndex):
+                ticker_data = data[ticker].copy()
             else:
                 ticker_data = data[ticker]
             
             if not ticker_data.empty:
-                # Optimize memory usage by converting to float32
+                necessary_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                ticker_data = ticker_data[necessary_columns]
+                ticker_data = ticker_data.dropna()
+                ticker_data = ticker_data[~ticker_data.index.duplicated(keep='last')]
+                ticker_data = ticker_data.sort_index()
+                
                 for col in ticker_data.select_dtypes(include=[np.float64]).columns:
                     ticker_data[col] = ticker_data[col].astype(np.float32)
                 
-                ticker_data.to_csv(f"{save_directory}/{ticker}.csv")
-                results.append(f"Successfully downloaded data for {ticker}")
+                if not ticker_data.empty:
+                    ticker_data.to_csv(f"{save_directory}/{ticker}.csv", mode='w', header=True)
+                    results.append(f"Successfully downloaded clean data for {ticker}")
+                else:
+                    results.append(f"No valid data available for {ticker} after cleaning")
             else:
                 results.append(f"No data available for {ticker}")
                 
         except Exception as e:
-            results.append(f"Error downloading {ticker}: {str(e)}")
+            results.append(f"Error processing {ticker}: {str(e)}")
             
     return results
+
 
 def update_stocks(max_workers: int = 10, batch_size: int = 50):
     os.makedirs(save_directory, exist_ok=True)
     os.makedirs(logs_path, exist_ok=True)
 
     # Read filtered tickers efficiently
-    tickers_df = pd.read_csv(f"{tickers_list}/tickers-filtered.csv", usecols=['Ticker'])
+    tickers_df = pd.read_csv(f"{tickers_dir}/tickers-filtered.csv", usecols=['Ticker'])
     tickers_list = tickers_df['Ticker'].tolist()
     
     # Process tickers in batches
@@ -92,7 +113,7 @@ def update_stocks(max_workers: int = 10, batch_size: int = 50):
 def main():
     # Check if tickers-filtered.csv is empty or doesn't exist
     try:
-        filtered_size = os.path.getsize(f"{tickers_list}/tickers-filtered.csv")
+        filtered_size = os.path.getsize(f"{tickers_dir}/tickers-filtered.csv")
         if filtered_size == 0:
             filter_tickers()
     except FileNotFoundError:
@@ -105,6 +126,17 @@ def main():
     # If log doesn't exist or is not from today
     if last_update is None or last_update.date() != current_time.date():
         update_stocks()
+    
+    # For debugging purposes
+    # update_stocks()
+
+def update_data():
+    """
+    Reroute the function call
+    - For readability on the other codes on exterior function call
+    """
+    main() 
+
 
 if __name__ == "__main__":
-    main()
+    update_data()
