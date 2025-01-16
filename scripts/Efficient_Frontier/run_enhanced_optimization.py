@@ -8,6 +8,13 @@ import numpy as np
 from sklearn.preprocessing import RobustScaler
 from scipy import stats
 
+def maintain_live_stock_data():
+    sys.path.append("/Users/simon/Financial-Trading-Algorithm/Data/Stock-Data")
+    from main import update_data
+    update_data()
+    print("Stock data updated")
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
