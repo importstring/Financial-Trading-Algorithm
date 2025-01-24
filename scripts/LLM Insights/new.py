@@ -1692,14 +1692,14 @@ class Agent:
     def test_outputs(self):
         self.loading_bar.update('test_outputs', 'Testing outputs')
         self.loading_bar.update('Testing outputs')
-        if self.plan == "":
-            raise "Plan not generated."
-        if self.active_tickers == []:
-            raise "Tickers not selected."
-        if self.previous_actions == {}:
-            raise "No previous actions."
-        if self.current_actions == {}:
-            raise "No current actions."
+ #       if self.plan == "":
+  #          raise "Plan not generated."
+    #    if self.active_tickers == []:
+     #       raise "Tickers not selected."
+  #      if self.previous_actions == {}:
+   #         logging.info("No previous actions.")
+#        if self.current_actions == {}:
+ #           raise "No current actions."
         if self.tickers == []:
             raise "No tickers available."
         self.loading_bar.update('test_outputs', 'Outputs tested', 1, 'completed')
