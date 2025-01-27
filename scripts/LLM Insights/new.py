@@ -261,12 +261,13 @@ class Perplexity:
             result = response.json()
             output = result.get('response', '')
             self.cache[cache_key] = (output, True)
+            self.loading_bar.update('query_perplexity', 'Perplexity query complete', 1, 'completed')
             return output, True
         except requests.exceptions.RequestException as e:
             error_msg = f"API request failed: {str(e)}"
             logging.error(error_msg)
             return error_msg, False
-        self.loading_bar.update('query_perplexity', 'Perplexity query complete', 1, 'completed')
+
 
     def _test_input_validity(self, model: str, query: str, 
                            max_tokens: int, temperature: float) -> bool:
