@@ -349,7 +349,7 @@ class StockData:
     def __init__(self): # TODO: Fix issue with tickers being empty
         self.loading_bar = LoadingBar() # GOOD
         self.loading_bar.initialize(total_tasks=5)
-        self.data_path = STOCK_DATA_PATH / 'Stock-Data'
+        self.data_path = STOCK_DATA_PATH
         self.maintain_stock_data()
         self.stock_data = {}  # Initialize empty dictionary
         self.read_stock_data()  # Now populate it
