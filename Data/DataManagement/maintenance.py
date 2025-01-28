@@ -135,12 +135,3 @@ def update_data():
 
 if __name__ == "__main__":
     update_data()
-
-
-"""ISSUE
-INFO:root:Starting data update process
-[**********************92%*******************    ]  46 of 50 completedWARNING:urllib3.connectionpool:Connection pool is full, discarding connection: query2.finance.yahoo.com. Connection pool size: 10
-[**********************94%********************   ]  47 of 50 completedWARNING:urllib3.connectionpool:Connection pool is full, discarding connection: query2.finance.yahoo.com. Connection pool size: 10
-[*********************100%***********************]  50 of 50 completed
-Successfully downloaded clean data for UVIX
-"""
