@@ -100,7 +100,7 @@ def download_batch(tickers: List[str]) -> List[str]:
             
     return results
 
-def update_stocks(max_workers: int = 10, batch_size: int = 50):
+def update_stocks(max_workers: int = 10, batch_size: int = 10):
     STOCK_DATA_PATH.mkdir(parents=True, exist_ok=True)
     LOGS_PATH.mkdir(parents=True, exist_ok=True)
 
@@ -112,7 +112,7 @@ def update_stocks(max_workers: int = 10, batch_size: int = 50):
         results = download_batch(batch)
         for result in results:
             print(result)
-        time.sleep(1)
+        time.sleep(2)
     
     create_log()
 
@@ -135,3 +135,5 @@ def update_data():
 
 if __name__ == "__main__":
     update_data()
+
+
