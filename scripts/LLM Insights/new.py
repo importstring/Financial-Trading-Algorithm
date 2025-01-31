@@ -997,8 +997,8 @@ class Agent:
             loading_bar.dynamic_update("Generating initial prompt", operation="pick_tickers.init")
             initial_prompt = self._generate_initial_prompt()
             
-            loading_bar.dynamic_update("Querying Ollama for initial analysis", operation="pick_tickers.query")
-            output = self.ollama.query_ollama(initial_prompt)
+            loading_bar.dynamic_update("Getting initial response from Ollama", operation="pick_tickers.initial")
+            output, actions = self.query_ollama_until_action(initial_prompt)
             self.previous_actions.append(output)
             
             selected_stocks = set(self.tickers)
@@ -1019,7 +1019,7 @@ class Agent:
                     for action_name, action_func in actions:
                         loading_bar.dynamic_update(
                             f"Executing {action_name} action\n"
-                            f"Iteration {iteration_count + 1}/{max_iterations}", 
+                            f"Parameter: {self.action_inputs}", 
                             operation=f"pick_tickers.action.{action_name}"
                         )
                         
@@ -1027,38 +1027,25 @@ class Agent:
                             refined_output = self.reason(action_func)
                             self.previous_actions.append(refined_output)
                             
-                            loading_bar.dynamic_update("Evaluating reasoning output", operation="pick_tickers.evaluate")
                             if self._should_stop_narrowing(refined_output, selected_stocks):
-                                loading_bar.dynamic_update("Stock selection complete", operation="pick_tickers.complete")
                                 return self._finalize_stock_selection(selected_stocks)
                             
                             new_selection = self.extract_selected_stocks(refined_output)
                             if new_selection:
-                                loading_bar.dynamic_update(
-                                    f"Adjusting stock selection\n"
-                                    f"Previous size: {len(selected_stocks)}\n"
-                                    f"New candidates: {len(new_selection)}", 
-                                    operation="pick_tickers.adjust"
-                                )
                                 selected_stocks = self._evaluate_and_adjust_selection(new_selection, selected_stocks)
                         
                         elif action_name in ['insight', 'research', 'stockdata']:
                             action_result = action_func()
-                            loading_bar.dynamic_update(
-                                f"Processing {action_name} results\n"
-                                f"Current selection size: {len(selected_stocks)}", 
-                                operation=f"pick_tickers.process.{action_name}"
-                            )
                             self._incorporate_action_result(action_name, action_result, selected_stocks)
                     
                     if 30 <= len(selected_stocks) <= 120:
-                        loading_bar.dynamic_update("Checking if selection is optimal", operation="pick_tickers.check_optimal")
                         if self._confirm_optimal_set(selected_stocks):
-                            loading_bar.dynamic_update("Optimal selection found", operation="pick_tickers.optimal")
                             return self._finalize_stock_selection(selected_stocks)
                     
-                    loading_bar.dynamic_update("Generating refinement prompt", operation="pick_tickers.refine")
-                    output = self.ollama.query_ollama(self._generate_refinement_prompt(selected_stocks))
+                    loading_bar.dynamic_update("Getting next action from Ollama", operation="pick_tickers.next")
+                    output, actions = self.query_ollama_until_action(
+                        self._generate_refinement_prompt(selected_stocks)
+                    )
                     iteration_count += 1
                     
                 except Exception as e:
@@ -1067,7 +1054,6 @@ class Agent:
                     iteration_count += 1
                     continue
 
-            loading_bar.dynamic_update("Maximum iterations reached", operation="pick_tickers.max_reached")
             return self._handle_max_iterations_reached(selected_stocks)
             
         except Exception as e:
@@ -1501,9 +1487,13 @@ class Agent:
     
     def get_actions(self, output):
         loading_bar.dynamic_update("Starting action analysis", operation="get_actions")
-        """Parse actions from output text."""
+        """Parse actions from output text using flexible pattern matching."""
         try:
-            loading_bar.dynamic_update("Parsing Ollama output", operation="get_actions.parse")
+            loading_bar.dynamic_update(
+                f"Analyzing Ollama response for actions...\n"
+                f"Response preview: {output[:100]}...", 
+                operation="get_actions.analyze"
+            )
             
             actions_mapping = {
                 'insight': self.insight,
@@ -1513,30 +1503,30 @@ class Agent:
             }
 
             actions = []
-            for line_num, line in enumerate(output.splitlines(), 1):
-                loading_bar.dynamic_update(
-                    f"Processing line {line_num}\n"
-                    f"Actions found so far: {len(actions)}", 
-                    operation="get_actions.line"
-                )
+            # Look for ${parameter} pattern anywhere in the text
+            import re
+            param_pattern = r'\${([^}]+)}'
+            params = re.finditer(param_pattern, output)
+            
+            for match in params:
+                param = match.group(1).strip()
+                # Look for action keywords before the parameter
+                context = output[max(0, match.start() - 50):match.start()]
                 
                 for key, action in actions_mapping.items():
-                    if key in line.lower():
-                        param_start = line.find("$") + 1 if "$" in line else -1
-                        param_end = line.find("}") if "}" in line else len(line)
-                        if param_start >= 0:
-                            param = line[param_start:param_end].strip()
-                            self.action_inputs = param
-                            actions.append((key, action))
-                            loading_bar.dynamic_update(
-                                f"Found {key} action\n"
-                                f"Parameter: {param}", 
-                                operation=f"get_actions.found.{key}"
-                            )
+                    if key in context.lower():
+                        actions.append((key, action))
+                        self.action_inputs = param
+                        loading_bar.dynamic_update(
+                            f"Found {key} action with parameter: {param}\n"
+                            f"Context: ...{context[-30:]}${param}", 
+                            operation=f"get_actions.found.{key}"
+                        )
+                        break
 
             loading_bar.dynamic_update(
                 f"Action analysis complete\n"
-                f"Total actions found: {len(actions)}", 
+                f"Found {len(actions)} actions", 
                 operation="get_actions.complete"
             )
             return actions
@@ -1545,6 +1535,43 @@ class Agent:
             loading_bar.dynamic_update(f"Error parsing actions: {str(e)}", operation="get_actions.error")
             logging.error(f"Error in get_actions: {e}")
             return []
+
+    def query_ollama_until_action(self, prompt, max_attempts=5):
+        """Query Ollama repeatedly until we get a response containing valid actions."""
+        attempt = 1
+        while attempt <= max_attempts:
+            loading_bar.dynamic_update(
+                f"Attempt {attempt}/{max_attempts} to get actionable response from Ollama", 
+                operation="query_ollama.attempt"
+            )
+            
+            response = self.ollama.query_ollama(prompt)
+            loading_bar.dynamic_update(
+                "Checking response for actions...", 
+                operation="query_ollama.check"
+            )
+            
+            actions = self.get_actions(response)
+            if actions:
+                loading_bar.dynamic_update(
+                    f"✅ Found {len(actions)} valid actions on attempt {attempt}", 
+                    operation="query_ollama.success"
+                )
+                return response, actions
+            
+            loading_bar.dynamic_update(
+                f"❌ No valid actions found in response. Retrying...\n"
+                f"Response preview: {response[:100]}...", 
+                operation="query_ollama.retry"
+            )
+            attempt += 1
+            
+        loading_bar.dynamic_update(
+            "⚠️ Max attempts reached. Forcing reasoning action.", 
+            operation="query_ollama.max_attempts"
+        )
+        # Return last response with a forced reasoning action
+        return response, [('reason', self.reason)]
 
     def stockdata(self, ticker):
         loading_bar.dynamic_update(f'Getting data for {ticker}', operation="stockdata")
