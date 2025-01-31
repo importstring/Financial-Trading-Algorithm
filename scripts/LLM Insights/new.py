@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import logging
+import math
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Union
 import pandas as pd
@@ -22,8 +23,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.table import Table
-import math
-from loading import LoadingBar
+from loading import DynamicLoadingBar
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -52,10 +52,11 @@ from Data.DataManagement.maintenance import update_data
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# Initialize the global loading bar
+loading_bar = DynamicLoadingBar()
+
 class ChatGPT4o:
     def __init__(self):
-        self.loading_bar = LoadingBar()
-        self.loading_bar.initialize(total_tasks=5)
         self.tests = 1
         self.checkmark = "✅"
         self.crossmark = "❌"
@@ -66,7 +67,7 @@ class ChatGPT4o:
             )
         self.api_key = self.read_api()
         self.sia = self._initialize_sentiment_analyzer()
-        self.loading_bar.update('ChatGPT4o.__init__', 'Instance initialization complete', 1, 'completed')
+        loading_bar.dynamic_update("Instance initialization complete", operation="ChatGPT4o.__init__")
         
     def _initialize_sentiment_analyzer(self):
         """Initialize VADER sentiment analyzer."""
@@ -74,7 +75,7 @@ class ChatGPT4o:
         return SentimentIntensityAnalyzer()
 
     def analyze_sentiment(self, statement):
-        self.loading_bar.update('analyze_sentiment', 'Starting sentiment analysis')
+        loading_bar.dynamic_update("Starting sentiment analysis", operation="analyze_sentiment")
         sentiment_scores = self.sia.polarity_scores(statement)
         compound_score = sentiment_scores['compound']
          
@@ -86,28 +87,28 @@ class ChatGPT4o:
             sentiment = "Neutral"
         
         normalized_score = compound_score * 2
-        self.loading_bar.update('analyze_sentiment', 'Sentiment analysis complete', 1, 'completed')
+        loading_bar.dynamic_update("Sentiment analysis complete", operation="analyze_sentiment")
         return sentiment, normalized_score
 
     def read_api(self):
-        self.loading_bar.update('read_api', 'Reading API key')
+        loading_bar.dynamic_update("Reading API key", operation="read_api")
         try:
             with open(self.api_key_path, 'r') as file:
                 self.api_key = file.read().strip()
         except FileNotFoundError:
-            self.loading_bar.update('API key file not found')
+            loading_bar.dynamic_update("API key file not found", operation="read_api")
             raise ValueError(f"API key file not found at {self.api_key_path}")
         
         if not self.api_key:
-            self.loading_bar.update('Empty API key')
+            loading_bar.dynamic_update("Empty API key", operation="read_api")
             raise ValueError("OpenAI API key is empty")
-        self.loading_bar.update('API key loaded successfully')
-        self.loading_bar.update('read_api', 'API key read complete', 1, 'completed')
+        loading_bar.dynamic_update("API key loaded successfully", operation="read_api")
+        loading_bar.dynamic_update("API key read complete", operation="read_api")
         return self.api_key
 
     
     def query_OpenAI(self, model="Chatgpt-4o", query="", max_tokens=150, temperature=0.5, role=""):
-        self.loading_bar.update('query_OpenAI', 'Preparing OpenAI query')
+        loading_bar.dynamic_update("Preparing OpenAI query", operation="query_OpenAI")
         model = self.default_model if model == "" else model
         role = self.default_role if role == "" else role
         def test_input_validity(self, model, query, max_tokens, temperature):
@@ -167,11 +168,11 @@ class ChatGPT4o:
         except Exception as e:
             output, status =  f"An error occurred: {e}", False
         
-        self.loading_bar.update('query_OpenAI', 'OpenAI query complete', 1, 'completed')
+        loading_bar.dynamic_update("OpenAI query complete", operation="query_OpenAI")
         return output, status
 
     def evaluate_response(self, response):
-        self.loading_bar.update('evaluate_response', 'Evaluating response')
+        loading_bar.dynamic_update("Evaluating response", operation="evaluate_response")
         """
         Evaluate response from ChatGPT-4o API and return insights with sentiment analysis.
         """
@@ -182,6 +183,7 @@ class ChatGPT4o:
                 return "The response contains an error."
             
             sentiment, score = self.analyze_sentiment(str(response))
+            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
             return {
                 "text": str(response),
                 "sentiment": sentiment,
@@ -189,14 +191,13 @@ class ChatGPT4o:
             }
         except Exception as e:
             logging.error(f"Error evaluating response: {e}")
+            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
             return "Error during evaluation."
-        self.loading_bar.update('evaluate_response', 'Response evaluation complete', 1, 'completed')
+
         
 
 class Perplexity:
-    def __init__(self):
-        self.loading_bar = LoadingBar()
-        self.loading_bar.initialize(total_tasks=5)
+    def __init__(self):  
         self.tests = 1
         self.checkmark = "✅"
         self.crossmark = "❌"
@@ -208,10 +209,10 @@ class Perplexity:
         self.api_key = self.read_api()
         self.sia = self._initialize_sentiment_analyzer()
         self.cache = {}
-        self.loading_bar.update('Perplexity.__init__', 'Instance initialization complete', 1, 'completed')
+        loading_bar.dynamic_update("Instance initialization complete", operation="Perplexity.__init__")
         
     def read_api(self) -> str:
-        self.loading_bar.update('read_api', 'Reading Perplexity API key')
+        loading_bar.dynamic_update("Reading Perplexity API key", operation="read_api")
         try:
             with open(self.api_key_path, 'r') as file:
                 api_key = file.read().strip()
@@ -220,12 +221,12 @@ class Perplexity:
                 return api_key
         except FileNotFoundError:
             raise ValueError(f"API key file not found at {self.api_key_path}")
-        self.loading_bar.update('read_api', 'Perplexity API key read', 1, 'completed')
+        loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
 
     def query_perplexity(self, model: str = "", query: str = "", 
                         max_tokens: int = 150, temperature: float = 0.5, 
                         role: str = "") -> Tuple[str, bool]:
-        self.loading_bar.update('query_perplexity', 'Querying Perplexity')
+        loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
         """
         Query the Perplexity API with validation and caching.
         Returns tuple of (response_text, success_status)
@@ -261,7 +262,7 @@ class Perplexity:
             result = response.json()
             output = result.get('response', '')
             self.cache[cache_key] = (output, True)
-            self.loading_bar.update('query_perplexity', 'Perplexity query complete', 1, 'completed')
+            loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
             return output, True
         except requests.exceptions.RequestException as e:
             error_msg = f"API request failed: {str(e)}"
@@ -301,7 +302,7 @@ class Perplexity:
         return SentimentIntensityAnalyzer()
 
     def analyze_sentiment(self, statement):
-        self.loading_bar.update('analyze_sentiment', 'Starting sentiment analysis')
+        loading_bar.dynamic_update("Starting sentiment analysis", operation="analyze_sentiment")
         """Analyze sentiment of a statement using VADER."""
         sentiment_scores = self.sia.polarity_scores(statement)
         compound_score = sentiment_scores['compound']
@@ -314,11 +315,11 @@ class Perplexity:
             sentiment = "neutral"
         
         normalized_score = compound_score * 2
-        self.loading_bar.update('analyze_sentiment', 'Sentiment analysis complete', 1, 'completed')
+        loading_bar.dynamic_update("Sentiment analysis complete", operation="analyze_sentiment")
         return sentiment, normalized_score
 
     def evaluate_response(self, response: Union[str, Dict]) -> Dict:
-        self.loading_bar.update('evaluate_response', 'Evaluating Perplexity response')
+        loading_bar.dynamic_update("Evaluating Perplexity response", operation="evaluate_response")
         """
         Evaluate response from Perplexity API with enhanced error handling.
         """
@@ -328,7 +329,7 @@ class Perplexity:
             
             text = response if isinstance(response, str) else str(response)
             sentiment, score = self.analyze_sentiment(text)
-            self.loading_bar.update('evaluate_response', 'Response evaluation complete', 1, 'completed')
+            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
             
             return {
                 "text": text,
@@ -346,36 +347,25 @@ class Perplexity:
 
 
 class StockData:
-    def __init__(self): # TODO: Fix issue with tickers being empty
-        self.loading_bar = LoadingBar() # GOOD
-        self.loading_bar.initialize(total_tasks=5)
+    def __init__(self):
         self.data_path = STOCK_DATA_PATH
         self.maintain_stock_data()
-        self.stock_data = {}  # Initialize empty dictionary
-        self.read_stock_data()  # Now populate it
+        self.stock_data = self.read_stock_data()  
 
-        if self.stock_data == {}:
-            raise 'stock data is empty on line 355'
-        
         self.tickers = list(self.stock_data.keys())
-
-        if self.tickers == []:
-            print("Tickers is empty on initialization")
-        else:
-            print('Tickers is fine from line 356')
             
-        self.loading_bar.update('StockData.__init__', 'Stock data initialization complete', 1, 'completed')
+        loading_bar.dynamic_update("Stock data initialization complete", operation="StockData.__init__")
 
     def get_stock_data(self, tickers):
-        self.loading_bar.update('get_stock_data', 'Fetching stock data')
+        loading_bar.dynamic_update("Fetching stock data", operation="get_stock_data")
         data = {}
         for ticker in tickers:
             data[ticker] = self.stock_data[ticker]
-        self.loading_bar.update('get_stock_data', 'Fetched stock data', 1, 'completed')
+        loading_bar.dynamic_update("Fetched stock data", operation="get_stock_data")
         return data
     
     def read_stock_data(self):
-        self.loading_bar.update('read_stock_data', 'Reading all stock data')
+        loading_bar.dynamic_update("Reading all stock data", operation="read_stock_data")
         """
         Data Path --> self.data_path
         Inside the Data path
@@ -388,7 +378,6 @@ class StockData:
         """
 
         stock_data = {}
-        stock_data_path = DATA_PATH / 'Stock-Data'
         try:
             # Get all CSV files in the data path using pathlib
             csv_files = list(self.data_path.glob("*.csv"))
@@ -403,7 +392,7 @@ class StockData:
                 
                 # Store in dictionary with ticker as key
                 stock_data[ticker] = df
-            self.loading_bar.update('read_stock_data', 'Stock data read complete', 1, 'completed')
+            loading_bar.dynamic_update("Stock data read complete", operation="read_stock_data")
             return stock_data
             
         except Exception as e:
@@ -411,7 +400,7 @@ class StockData:
             return {}
 
     def maintain_stock_data(self) -> Optional[bool]:
-        self.loading_bar.update('maintain_stock_data', 'Maintaining stock data')
+        loading_bar.dynamic_update("Maintaining stock data", operation="maintain_stock_data")
         """
         Run update_data() from the Data Management module.
         
@@ -424,7 +413,7 @@ class StockData:
             logging.info("Starting data update process")
             result = update_data()
             logging.info("Data update process completed")
-            self.loading_bar.update('maintain_stock_data', 'Maintenance complete', 1, 'completed')
+            loading_bar.dynamic_update("Maintenance complete", operation="maintain_stock_data")
             return result if isinstance(result, bool) else None
         
         except ImportError as e:
@@ -436,8 +425,6 @@ class StockData:
 
 class Ollama:
     def __init__(self):
-        self.loading_bar = LoadingBar()
-        self.loading_bar.initialize(total_tasks=5)
         self.model = 'llama3.2:1b'
         self.max_iterations = 10
         self.max_time = 1800  # 30 minutes in seconds
@@ -450,11 +437,11 @@ class Ollama:
             "stockdata": "Get stock data for x",
             'reason': "Reason for x"
         }
-        self.loading_bar.update('Ollama.__init__', 'Ollama initialization complete', 1, 'completed')
+        loading_bar.dynamic_update("Ollama initialization complete", operation="Ollama.__init__")
 
     def reason(self, query):
-        self.loading_bar.update('reason', 'Initiating reasoning')
-        self.loading_bar.update('reason', 'Initiating chain of thought reasoning')
+        loading_bar.dynamic_update("Initiating reasoning", operation="reason")
+        loading_bar.dynamic_update("Initiating chain of thought reasoning", operation="reason")
         
         chain_of_thought = [
             f"Initial query: {query}",
@@ -466,19 +453,19 @@ class Ollama:
         ]
         
         for step in chain_of_thought[1:]:
-            self.loading_bar.update(f'Reasoning: {step}')
+            loading_bar.dynamic_update(f'Reasoning: {step}', operation="reason")
             step_query = f"{step}\nBased on the previous steps and the initial query, what insights can we derive?"
             step_response = self.ollama.query_ollama(step_query)
             chain_of_thought.append(f"Output: {step_response}")
         
         final_reasoning = "\n".join(chain_of_thought)
-        self.loading_bar.update('Finalizing chain of thought reasoning')
-        self.loading_bar.update('reason', 'Reasoning complete', 1, 'completed')
+        loading_bar.dynamic_update("Finalizing chain of thought reasoning", operation="reason")
+        loading_bar.dynamic_update("Reasoning complete", operation="reason")
         return final_reasoning
 
 
     def query_ollama(self, prompt: str) -> str:
-        self.loading_bar.update('query_ollama', 'Querying Ollama')
+        loading_bar.dynamic_update("Querying Ollama", operation="query_ollama")
         try:
             response = ollama.generate(
                 model = 'llama3.2:1b',
@@ -487,7 +474,7 @@ class Ollama:
 #                temperature=0.5,
                 system="You are a financial agent making decisions based on market analysis."
             )
-            self.loading_bar.update('query_ollama', 'Ollama query complete', 1, 'completed')
+            loading_bar.dynamic_update("Ollama query complete", operation="query_ollama")
             return response['response']
         except Exception as e:
             logging.error(f"Error querying Ollama: {e}")
@@ -517,16 +504,16 @@ class Ollama:
 
 
     def query_ollama_for_plan(self, prompt: str) -> str:
-        self.loading_bar.update('query_ollama_for_plan', 'Generating plan with Ollama')
+        loading_bar.dynamic_update("Generating plan with Ollama", operation="query_ollama_for_plan")
         try:
-            self.loading_bar.update('Generating plan, Querying Ollama')
+            loading_bar.dynamic_update("Generating plan, Querying Ollama", operation="query_ollama_for_plan")
             response = ollama.generate(
                 model=self.model,
                 prompt=f"{prompt}\n\nIMPORTANT: Your response MUST start with 'ACTION:' followed by one of these actions: {', '.join(self.action_handlers.keys())}. Then, add 'PARAMS:' followed by the necessary parameters separated by commas.",
                 system="You are a financial agent making decisions based on market analysis. Always respond with an action and parameters in the specified format."
             )
-            self.loading_bar.update('Generating plan', 'Querying Ollama', 1, 'completed')
-            self.loading_bar.update('query_ollama_for_plan', 'Plan generation complete', 1, 'completed')
+            loading_bar.dynamic_update("Querying Ollama", operation="query_ollama_for_plan")
+            loading_bar.dynamic_update("Plan generation complete", operation="query_ollama_for_plan")
             return response['response']
         except Exception as e:
             logging.error(f"Error querying Ollama: {e}")
@@ -534,17 +521,17 @@ class Ollama:
 
 
     def make_plan(self, query: str) -> str:
-        self.loading_bar.update('make_plan', 'Making plan')
-        self.loading_bar.update('Generating plan')
+        loading_bar.dynamic_update("Making plan", operation="make_plan")
+        loading_bar.dynamic_update("Generating plan", operation="make_plan")
         if not query:
             raise ValueError("Query cannot be empty")
 
-        self.loading_bar.update('Generating plan', 'Initializing start time')
+        loading_bar.dynamic_update("Initializing start time", operation="make_plan")
         start_time = time.time()
-        self.loading_bar.update('Generating plan', 'Initializing start time', 1, 'completed')
-        self.loading_bar.update('Generating plan', 'Initializing plan')
+        loading_bar.dynamic_update("Initializing start time", operation="make_plan")
+        loading_bar.dynamic_update("Initializing plan", operation="make_plan")
         plan = []
-        self.loading_bar.update('Generating plan', 'Initializing plan', 1, 'completed')
+        loading_bar.dynamic_update("Initializing plan", operation="make_plan")
         
         def get_plan():
             return "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
@@ -566,7 +553,7 @@ class Ollama:
                 
                 if len(plan) >= self.max_iterations:
                     break
-            self.loading_bar.update('make_plan', 'Plan made', 1, 'completed')
+            loading_bar.dynamic_update("Plan made", operation="make_plan")
             return f"Final plan:\n{get_plan()}"
 
         except Exception as e:
@@ -575,17 +562,15 @@ class Ollama:
 
 class Agent:
     def __init__(self, initial_balance=100, risk_tolerance=0.02):
+
         self.balance = initial_balance
         
         # Inialize components
-        self.loading_bar = LoadingBar()
-        self.loading_bar.initialize(total_tasks=5)
         self.chatgpt = ChatGPT4o()
         self.perplexity = Perplexity()
         self.stock_data = StockData()
         self.ollama = Ollama()
-
-        self.loading_bar.update('Agent.__init__', 'Agent initialization')
+        self.sentiment_analyzer = SentimentIntensityAnalyzer()
 
         # Spinner
         self.console = Console()
@@ -636,60 +621,42 @@ class Agent:
         self.task_progresses = {}
         self.overall_task = None
         self.most_recent_action = "Initializing..."
-        self.loading_bar.update('Agent.__init__', 'Initialization complete', 1, 'completed')
-
 
     def buy(self, ticker, shares, price, min=0, max=0):
         if ticker.empty():
             return
-        self.loading_bar.update(f'Buying {ticker}')
+        loading_bar.dynamic_update(f'Buying {ticker}', operation="buy")
         if min == max == 0:
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max')
-            self.loading_bar.update(f'Buying {ticker}', 'Predicting future volume')
+            loading_bar.dynamic_update(f'Calculating min and max', operation="buy")
+            loading_bar.dynamic_update(f'Predicting future volume', operation="buy")
             predicted_volume = self.predict_future_volume(ticker)
-            self.loading_bar.update(f'Buying {ticker}', 'Predicting future volume', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 0.25)
-            self.loading_bar.update(f'Buying {ticker}', 'Predicting future volume', 1, 'completed')
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating dynamic lead time')
+            loading_bar.dynamic_update(f'Predicting future volume', operation="buy")
+            loading_bar.dynamic_update(f'Calculating dynamic lead time', operation="buy")
             dynamic_lead_time = self.calculate_dynamic_lead_time(ticker)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating dynamic lead time', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 0.5)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating dynamic lead time', 1, 'completed')
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating adaptive safety stock')
+            loading_bar.dynamic_update(f'Calculating dynamic lead time', operation="buy")
+            loading_bar.dynamic_update(f'Calculating adaptive safety stock', operation="buy")
             safety_stock = self.calculate_adaptive_safety_stock(ticker)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating adaptive safety stock', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 0.75)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating adaptive safety stock', 1, 'completed')
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating base min')
+            loading_bar.dynamic_update(f'Calculating adaptive safety stock', operation="buy")
+            loading_bar.dynamic_update(f'Calculating base min', operation="buy")
             base_min = (predicted_volume * dynamic_lead_time) + safety_stock
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating base min', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 1)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating base min', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Optimizing reorder quantity')
+            loading_bar.dynamic_update(f'Calculating base min', operation="buy")
+            loading_bar.dynamic_update(f'Optimizing reorder quantity', operation="buy")
             reorder_qty = self.optimize_reorder_quantity(ticker, base_min)
-            self.loading_bar.update(f'Buying {ticker}', 'Optimizing reorder quantity', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 0.93)
-            self.loading_bar.update(f'Buying {ticker}', 'Optimizing reorder quantity', 1, 'completed')
-            self.loading_bar.update(f'Buying {ticker}', 'Adjusting levels for sentiment')
+            loading_bar.dynamic_update(f'Optimizing reorder quantity', operation="buy")
+            loading_bar.dynamic_update(f'Adjusting levels for sentiment', operation="buy")
             sentiment_adjusted_min, sentiment_adjusted_max = self.adjust_levels_for_sentiment(
                 ticker,
                 base_min,
                 base_min + reorder_qty
             )
-            self.loading_bar.update(f'Buying {ticker}', 'Adjusting levels for sentiment', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 0.97)
-            self.loading_bar.update(f'Buying {ticker}', 'Adjusting levels for sentiment', 1, 'completed')
-            self.loading_bar.update(f'Buying {ticker}', 'Finalizing buy')
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 0.98)
+            loading_bar.dynamic_update(f'Adjusting levels for sentiment', operation="buy")
+            loading_bar.dynamic_update(f'Finalizing buy', operation="buy")
             min, max = round(sentiment_adjusted_min), round(sentiment_adjusted_max)
-            self.loading_bar.update(f'Buying {ticker}', 'Finalizing buy', 0.87)
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 1)
-            self.loading_bar.update(f'Buying {ticker}', 'Finalizing buy', 1, 'completed')
-            self.loading_bar.update(f'Buying {ticker}', 'Calculating min and max', 1, 'completed')
-        self.loading_bar.update(f'Buying {ticker}', 'Saving information')
+            loading_bar.dynamic_update(f'Finalizing buy', operation="buy")
+        loading_bar.dynamic_update(f'Saving information', operation="buy")
         self.new_recommendations.append(f"buy {shares} {ticker} at {price} with a min of {min} and a max of {max}")
-        self.loading_bar.update(f'Buying {ticker}', 'Saving information', 1)
-        self.loading_bar.update(f'Buy {ticker}', 'completed', 1, f'Buy action completed: Buy {shares} of {ticker} at {price} with a min of {min} and a max of {max}')
+        loading_bar.dynamic_update(f'Saving information', operation="buy")
+        loading_bar.dynamic_update(f'Buy action completed: Buy {shares} of {ticker} at {price} with a min of {min} and a max of {max}', operation="buy")
 
     def adjust_levels_for_sentiment(self, ticker, min_level, max_level):
         sentiment_score = self.sentiment_analyzer.get_sentiment(ticker)
@@ -718,7 +685,7 @@ class Agent:
         return math.sqrt((2 * ordering_cost * demand_forecast) / carrying_cost)
         
     def sell(self, ticker, shares, price, min, max):
-        self.loading_bar.update('sell', f'Selling {ticker}')
+        loading_bar.dynamic_update(f'Selling {ticker}', operation="sell")
         # Incorporate sentiment analysis to adjust sell thresholds
         sentiment_score = self.sentiment_analyzer.get_sentiment(ticker)
         sentiment_factor = 1 + (sentiment_score * 0.1)
@@ -738,10 +705,10 @@ class Agent:
             self.new_recommendations.append(
                 f'hold {ticker} - current price below predicted price'
             )
-        self.loading_bar.update('sell', 'Sell action complete', 1, 'completed')
+        loading_bar.dynamic_update("Sell action complete", operation="sell")
 
     def hold(self, ticker):
-        self.loading_bar.update('hold', f'Holding {ticker}')
+        loading_bar.dynamic_update(f'Holding {ticker}', operation="hold")
         # Incorporate market trend analysis to determine if holding is optimal
         market_trend = self.stock_data.get_market_trend(ticker)
         sentiment_score = self.sentiment_analyzer.get_sentiment(ticker)
@@ -758,11 +725,11 @@ class Agent:
             self.new_recommendations.append(
                 f'hold {ticker} - neutral conditions'
             )
-        self.loading_bar.update('hold', 'Hold action complete', 1, 'completed')
+        loading_bar.dynamic_update("Hold action complete", operation="hold")
         
     
     def research(self):
-        self.loading_bar.update('research', 'Researching stock')
+        loading_bar.dynamic_update("Researching stock", operation="research")
         """Get detailed research analysis using Perplexity."""
         if not self.action_inputs:
             return {"error": "No ticker provided", "sentiment": "neutral", "sentiment_score": 0.0}
@@ -771,11 +738,11 @@ class Agent:
         response, status = self.perplexity.query_perplexity(query=query)
         if status:
             return self.perplexity.evaluate_response(response)
-        self.loading_bar.update('research', 'Stock research complete', 1, 'completed')
+        loading_bar.dynamic_update("Stock research complete", operation="research")
         return {"error": "Failed to get research", "sentiment": "neutral", "sentiment_score": 0.0}
 
     def insight(self):
-        self.loading_bar.update('insight', 'Gathering market insights')
+        loading_bar.dynamic_update("Gathering market insights", operation="insight")
         """Get market insights for a specific ticker using ChatGPT."""
         if not self.action_inputs:
             return {"error": "No ticker provided", "sentiment": "neutral", "sentiment_score": 0.0}
@@ -784,11 +751,11 @@ class Agent:
         response, status = self.chatgpt.query_OpenAI(query=query)
         if status:
             return response
-        self.loading_bar.update('insight', 'Insights gathered', 1, 'completed')
+        loading_bar.dynamic_update("Insights gathered", operation="insight")
         return {"error": "Failed to get insights", "sentiment": "neutral", "sentiment_score": 0.0}
 
     def spinner_animation(self, plan_output=None, current_stage=None):
-        self.loading_bar.update('spinner_animation', 'Animating spinner')
+        loading_bar.dynamic_update("Animating spinner", operation="spinner_animation")
         if self.progress is None:
             self.initialize_progress()
         
@@ -804,19 +771,19 @@ class Agent:
 
         # NEW: show most recent action
         self.console.print(f"[bold cyan]Most Recent Action:[/bold cyan] {self.most_recent_action}")
-        self.loading_bar.update('spinner_animation', 'Spinner animation complete', 1, 'completed')
+        loading_bar.dynamic_update("Spinner animation complete", operation="spinner_animation")
 
     def initialize_plan_tasks(self, plan_output):
-        self.loading_bar.update('initialize_plan_tasks', 'Initializing plan tasks')
+        loading_bar.dynamic_update("Initializing plan tasks", operation="initialize_plan_tasks")
         plan_steps = plan_output.split('\n')
         for step in plan_steps:
             task_name = step.strip()
             if task_name:
                 self.task_progresses[task_name] = self.progress.add_task(f"[cyan]{task_name}", total=100, status="Pending")
-        self.loading_bar.update('initialize_plan_tasks', 'Plan tasks initialized', 1, 'completed')
+        loading_bar.dynamic_update("Plan tasks initialized", operation="initialize_plan_tasks")
 
     def update_plan_progress(self, current_stage):
-        self.loading_bar.update('update_plan_progress', 'Updating plan progress')
+        loading_bar.dynamic_update("Updating plan progress", operation="update_plan_progress")
         for task_name, task_id in self.task_progresses.items():
             if task_name in current_stage:
                 self.progress.update(task_id, completed=100, status="[bold green]Completed[/bold green]")
@@ -829,18 +796,18 @@ class Agent:
         else: 
             overall_progress = (completed_tasks / len(self.task_progresses)) * 100
         self.progress.update(self.overall_task, completed=overall_progress)
-        self.loading_bar.update('update_plan_progress', 'Plan progress updated', 1, 'completed')
+        loading_bar.dynamic_update("Plan progress updated", operation="update_plan_progress")
 
 
     def update_task_progress(self, task, status, advance=0):
-        self.loading_bar.update('update_task_progress', f'Updating task: {task}')
+        loading_bar.dynamic_update(f'Updating task: {task}', operation="update_task_progress")
         if task not in self.task_progresses:
             self.task_progresses[task] = self.progress.add_task(f"[cyan]{task}", total=100, status="Pending")
         self.progress.update(self.task_progresses[task], advance=advance, status=status)
-        self.loading_bar.update('update_task_progress', f'{task} updated', 1, 'completed')
+        loading_bar.dynamic_update(f'{task} updated', operation="update_task_progress")
 
     def initialize_progress(self):
-        self.loading_bar.update('initialize_progress', 'Initializing progress tracking')
+        loading_bar.dynamic_update("Initializing progress tracking", operation="initialize_progress")
         self.console.print(Panel.fit("[bold cyan]Financial Agent Task Execution[/bold cyan]", border_style="blue"))
         self.progress = Progress(
             SpinnerColumn(),
@@ -854,25 +821,25 @@ class Agent:
         self.progress.start()
         self.overall_task = self.progress.add_task("[yellow]Overall Progress", total=100, status="In Progress")
         self.task_progresses = {}
-        self.loading_bar.update('initialize_progress', 'Progress tracking initialized', 1, 'completed')
+        loading_bar.dynamic_update("Progress tracking initialized", operation="initialize_progress")
 
     def update_most_recent_action(self, action):
-        self.loading_bar.update('update_most_recent_action', 'Updating most recent action')
+        loading_bar.dynamic_update("Updating most recent action", operation="update_most_recent_action")
         self.most_recent_action = action
         self.spinner_animation(current_stage=self.most_recent_action)
-        self.loading_bar.update('update_most_recent_action', 'Action updated', 1, 'completed')
+        loading_bar.dynamic_update("Action updated", operation="update_most_recent_action")
 
     def finalize_execution(self):
-        self.loading_bar.update('finalize_execution', 'Finalizing execution')
+        loading_bar.dynamic_update("Finalizing execution", operation="finalize_execution")
         for task_id in self.task_progresses.values():
             self.progress.update(task_id, completed=100, status="[bold green]Completed[/bold green]")
         self.progress.update(self.overall_task, completed=100, status="[bold green]Completed[/bold green]")
         self.progress.stop()
         self.console.print(Panel.fit("[bold green]All financial tasks completed successfully.[/bold green]", border_style="green"))
-        self.loading_bar.update('finalize_execution', 'Execution finalized', 1, 'completed')
+        loading_bar.dynamic_update("Execution finalized", operation="finalize_execution")
 
     def return_stock_data(self):
-        self.loading_bar.update('return_stock_data', 'Returning stock data')
+        loading_bar.dynamic_update("Returning stock data", operation="return_stock_data")
         """
         Input .self
         |--> action_inputs
@@ -883,23 +850,23 @@ class Agent:
         |--> Dictionary
         |----> {ticker: DataFrame}
         """
-        self.loading_bar.update('return_stock_data', 'Stock data returned', 1, 'completed')
+        loading_bar.dynamic_update("Stock data returned", operation="return_stock_data")
         return self.stock_data.get_stock_data(self.action_inputs)
         
     def perceive_environment(self, stock_data, perplexity_insights, chatgpt_insights):
-        self.loading_bar.update('perceive_environment', 'Perceiving environment')
+        loading_bar.dynamic_update("Perceiving environment", operation="perceive_environment")
         self.environment = {
             "stock_data": stock_data,
             "perplexity_insights": perplexity_insights,
             "chatgpt_insights": chatgpt_insights,
         }
-        self.loading_bar.update('Updating technical indicators')
+        loading_bar.dynamic_update("Updating technical indicators", operation="perceive_environment")
         self._update_technical_indicators()
-        self.loading_bar.update('perceive_environment', 'Environment perceived', 1, 'completed')
+        loading_bar.dynamic_update("Environment perceived", operation="perceive_environment")
 
 
     def get_portfolio(self):
-        self.loading_bar.update('get_portfolio', 'Loading portfolio data')
+        loading_bar.dynamic_update("Loading portfolio data", operation="get_portfolio")
         try:
             # Use pathlib for portfolio path handling
             portfolio_files = list(PORTFOLIO_PATH.rglob("portfolio.csv"))
@@ -911,17 +878,17 @@ class Agent:
         except Exception as e:
             logging.error(f"Error reading portfolio: {e}")
             return pd.DataFrame()
-        self.loading_bar.update('get_portfolio', 'Portfolio data loaded', 1, 'completed')
+        loading_bar.dynamic_update("Portfolio data loaded", operation="get_portfolio")
 
     def load_previous_actions(self):
-        self.loading_bar.update('load_previous_actions', 'Loading previous actions')
+        loading_bar.dynamic_update("Loading previous actions", operation="load_previous_actions")
         try:
             # Use pathlib for portfolio path handling
             actions_files = list(CONVERSION_PATH.rglob("actions.csv"))
             if actions_files:
                 # Get the most recent actions file
                 latest_actions = max(actions_files, key=lambda p: p.stat().st_mtime)
-                self.loading_bar.update('load_previous_actions', 'Previous actions loaded', 1, 'completed')
+                loading_bar.dynamic_update("Previous actions loaded", operation="load_previous_actions")
                 return pd.read_csv(latest_actions)
             return pd.DataFrame()  # Return empty DataFrame if no actions found
         except Exception as e:
@@ -930,8 +897,8 @@ class Agent:
 
 
     def plan_actions(self):
-        self.loading_bar.update('plan_actions', 'Planning actions')
-        self.loading_bar.update("Planning", "Generating plan")
+        loading_bar.dynamic_update("Planning actions", operation="plan_actions")
+        loading_bar.dynamic_update("Generating plan", operation="Planning")
         prompt = (
             f"""
             You are a financial agent that tries to make as much money as possible.
@@ -970,11 +937,11 @@ class Agent:
             """
         )
         self.plan = self.ollama.make_plan(prompt)
-        self.loading_bar.update("Planning", "Plan generated")
-        self.loading_bar.update('plan_actions', 'Actions planned', 1, 'completed')
+        loading_bar.dynamic_update("Plan generated", operation="Planning")
+        loading_bar.dynamic_update("Actions planned", operation="plan_actions")
 
     def decide_action(self):
-        self.loading_bar.update('decide_action', 'Deciding action')
+        loading_bar.dynamic_update("Deciding action", operation="decide_action")
         '''
         Phase 0: Plan out actions
             query ollama min 100 max ((60)(60))/5 times. 
@@ -1001,11 +968,11 @@ class Agent:
 
         self.run_phase()
       
-        self.loading_bar.update('decide_action', 'Action decided', 1, 'completed')
+        loading_bar.dynamic_update("Action decided", operation="decide_action")
         return
 
     def run_phase(self):
-        self.loading_bar.update('run_phase', 'Running phase')
+        loading_bar.dynamic_update("Running phase", operation="run_phase")
         phases = {
             0: self.plan_actions(),
             1: self.pick_tickers(),
@@ -1017,57 +984,95 @@ class Agent:
 
         try:
             phases[self.phase]()
-            self.loading_bar.update('run_phase', 'Phase run complete', 1, 'completed')
+            loading_bar.dynamic_update("Phase run complete", operation="run_phase")
             return
         except KeyError:
             logging.error(f"Invalid phase: {self.phase}")
             return 
         
     def pick_tickers(self):
-        self.loading_bar.update('pick_tickers', 'Picking tickers')
-        self.update_most_recent_action("Initiating comprehensive stock selection process")
+        loading_bar.dynamic_update("Starting stock selection process", operation="pick_tickers")
         
         try:
+            loading_bar.dynamic_update("Generating initial prompt", operation="pick_tickers.init")
             initial_prompt = self._generate_initial_prompt()
+            
+            loading_bar.dynamic_update("Querying Ollama for initial analysis", operation="pick_tickers.query")
             output = self.ollama.query_ollama(initial_prompt)
             self.previous_actions.append(output)
             
             selected_stocks = set(self.tickers)
             iteration_count = 0
-            max_iterations = (60*60)//5  # Prevent infinite loops
+            max_iterations = (60*60)//5  # 720 iterations max
             
             while iteration_count < max_iterations:
-                self.loading_bar.update(f'Stock selection iteration {iteration_count + 1}')
-                actions = self.get_actions(output)
+                loading_bar.dynamic_update(
+                    f"Stock selection iteration {iteration_count + 1}/{max_iterations}\n"
+                    f"Current selection size: {len(selected_stocks)} stocks", 
+                    operation=f"pick_tickers.iteration_{iteration_count}"
+                )
                 
-                for action_name, action_func in actions:
-                    if action_name == 'reason':
-                        refined_output = self.reason(action_func)
-                        self.previous_actions.append(refined_output)
-                        
-                        if self._should_stop_narrowing(refined_output, selected_stocks):
-                            return self._finalize_stock_selection(selected_stocks)
-                        
-                        new_selection = self.extract_selected_stocks(refined_output)
-                        if new_selection:
-                            selected_stocks = self._evaluate_and_adjust_selection(new_selection, selected_stocks)
+                try:
+                    loading_bar.dynamic_update("Analyzing Ollama response", operation="pick_tickers.analyze")
+                    actions = self.get_actions(output)
                     
-                    elif action_name in ['insight', 'research', 'stockdata']:
-                        action_result = action_func()
-                        self._incorporate_action_result(action_name, action_result, selected_stocks)
-                
-                if 30 <= len(selected_stocks) <= 120:
-                    if self._confirm_optimal_set(selected_stocks):
-                        return self._finalize_stock_selection(selected_stocks)
-                
-                output = self.ollama.query_ollama(self._generate_refinement_prompt(selected_stocks))
-                iteration_count += 1
-            self.loading_bar.update('pick_tickers', 'Tickers picked', 1, 'completed')
+                    for action_name, action_func in actions:
+                        loading_bar.dynamic_update(
+                            f"Executing {action_name} action\n"
+                            f"Iteration {iteration_count + 1}/{max_iterations}", 
+                            operation=f"pick_tickers.action.{action_name}"
+                        )
+                        
+                        if action_name == 'reason':
+                            refined_output = self.reason(action_func)
+                            self.previous_actions.append(refined_output)
+                            
+                            loading_bar.dynamic_update("Evaluating reasoning output", operation="pick_tickers.evaluate")
+                            if self._should_stop_narrowing(refined_output, selected_stocks):
+                                loading_bar.dynamic_update("Stock selection complete", operation="pick_tickers.complete")
+                                return self._finalize_stock_selection(selected_stocks)
+                            
+                            new_selection = self.extract_selected_stocks(refined_output)
+                            if new_selection:
+                                loading_bar.dynamic_update(
+                                    f"Adjusting stock selection\n"
+                                    f"Previous size: {len(selected_stocks)}\n"
+                                    f"New candidates: {len(new_selection)}", 
+                                    operation="pick_tickers.adjust"
+                                )
+                                selected_stocks = self._evaluate_and_adjust_selection(new_selection, selected_stocks)
+                        
+                        elif action_name in ['insight', 'research', 'stockdata']:
+                            action_result = action_func()
+                            loading_bar.dynamic_update(
+                                f"Processing {action_name} results\n"
+                                f"Current selection size: {len(selected_stocks)}", 
+                                operation=f"pick_tickers.process.{action_name}"
+                            )
+                            self._incorporate_action_result(action_name, action_result, selected_stocks)
+                    
+                    if 30 <= len(selected_stocks) <= 120:
+                        loading_bar.dynamic_update("Checking if selection is optimal", operation="pick_tickers.check_optimal")
+                        if self._confirm_optimal_set(selected_stocks):
+                            loading_bar.dynamic_update("Optimal selection found", operation="pick_tickers.optimal")
+                            return self._finalize_stock_selection(selected_stocks)
+                    
+                    loading_bar.dynamic_update("Generating refinement prompt", operation="pick_tickers.refine")
+                    output = self.ollama.query_ollama(self._generate_refinement_prompt(selected_stocks))
+                    iteration_count += 1
+                    
+                except Exception as e:
+                    loading_bar.dynamic_update(f"Error in iteration: {str(e)}", operation="pick_tickers.error")
+                    logging.error(f"Error in iteration {iteration_count + 1}: {e}")
+                    iteration_count += 1
+                    continue
+
+            loading_bar.dynamic_update("Maximum iterations reached", operation="pick_tickers.max_reached")
             return self._handle_max_iterations_reached(selected_stocks)
-        
+            
         except Exception as e:
+            loading_bar.dynamic_update(f"Error in stock selection: {str(e)}", operation="pick_tickers.error")
             logging.error(f"Error in pick_tickers: {e}")
-            self.loading_bar.update('pick_tickers', 'Tickers picked', 1, 'completed')
             return self._emergency_stock_selection()
         
 
@@ -1262,7 +1267,7 @@ class Agent:
 
 
     def research_and_insight(self):
-        self.loading_bar.update('research_and_insight', 'Researching and gathering insights')
+        loading_bar.dynamic_update("Researching and gathering insights", operation="research_and_insight")
         self.update_most_recent_action("Researching and gathering insights")
         def generate_initial_prompt():
             return f"""
@@ -1407,11 +1412,12 @@ class Agent:
         chain_of_thought = []
 
         for ticker in self.active_tickers:
+            loading_bar.dynamic_update(f"Analyzing {ticker} ({len(results)}/{len(self.active_tickers)})", operation="research_and_insight.ticker_analysis")
             ticker_query_count = 0
             ticker_data_collected = False
             ticker_decision_made = False
 
-            self.loading_bar.update(f"Analyzing {ticker}")
+            loading_bar.dynamic_update(f"Analyzing {ticker}", operation="research_and_insight")
 
             while not (ticker_data_collected and ticker_decision_made):
                 for action_name, action_func in actions:
@@ -1488,43 +1494,66 @@ class Agent:
                 return reviewed_decisions
             else:
                 # If further review is needed, we can implement an iterative review process
-                return review_decisions(reviewed_decisions, results)
+                return self.review_decisions(reviewed_decisions, results)
 
-        self.loading_bar.update('research_and_insight', 'Research and insights gathered', 1, 'completed')
+        loading_bar.dynamic_update("Research and insight analysis complete", operation="research_and_insight")
         return decisions
     
     def get_actions(self, output):
-        self.loading_bar.update('get_actions', 'Getting actions')
+        loading_bar.dynamic_update("Starting action analysis", operation="get_actions")
         """Parse actions from output text."""
-        actions_mapping = {
-            'insight': self.insight,
-            'research': self.research,
-            'reason': self.reason,
-            'stockdata': self.stock_data.get_stock_data
-        }
+        try:
+            loading_bar.dynamic_update("Parsing Ollama output", operation="get_actions.parse")
+            
+            actions_mapping = {
+                'insight': self.insight,
+                'research': self.research,
+                'reason': self.reason,
+                'stockdata': self.stock_data.get_stock_data
+            }
 
-        actions = []
-        for line in output.splitlines():
-            for key, action in actions_mapping.items():
-                if key in line.lower():
-                    param_start = line.find("$") + 1 if "$" in line else -1
-                    param_end = line.find("}") if "}" in line else len(line)
-                    if param_start >= 0:
-                        param = line[param_start:param_end].strip()
-                        self.action_inputs = param
-                        actions.append((key, action))
+            actions = []
+            for line_num, line in enumerate(output.splitlines(), 1):
+                loading_bar.dynamic_update(
+                    f"Processing line {line_num}\n"
+                    f"Actions found so far: {len(actions)}", 
+                    operation="get_actions.line"
+                )
+                
+                for key, action in actions_mapping.items():
+                    if key in line.lower():
+                        param_start = line.find("$") + 1 if "$" in line else -1
+                        param_end = line.find("}") if "}" in line else len(line)
+                        if param_start >= 0:
+                            param = line[param_start:param_end].strip()
+                            self.action_inputs = param
+                            actions.append((key, action))
+                            loading_bar.dynamic_update(
+                                f"Found {key} action\n"
+                                f"Parameter: {param}", 
+                                operation=f"get_actions.found.{key}"
+                            )
 
-        self.loading_bar.update('get_actions', 'Actions retrieved', 1, 'completed')
-        return actions
+            loading_bar.dynamic_update(
+                f"Action analysis complete\n"
+                f"Total actions found: {len(actions)}", 
+                operation="get_actions.complete"
+            )
+            return actions
+            
+        except Exception as e:
+            loading_bar.dynamic_update(f"Error parsing actions: {str(e)}", operation="get_actions.error")
+            logging.error(f"Error in get_actions: {e}")
+            return []
 
     def stockdata(self, ticker):
-        self.loading_bar.update('stockdata', f'Getting data for {ticker}')
+        loading_bar.dynamic_update(f'Getting data for {ticker}', operation="stockdata")
         """Retrieve historical stock data for analysis."""
         if ticker in self.stock_data.stock_data:
             data = self.stock_data.get_stock_data([ticker])
-            self.loading_bar.update('stockdata', 'Data retrieved', 1, 'completed')
+            loading_bar.dynamic_update("Data retrieved", operation="stockdata")
             return {ticker: data[ticker]}
-        self.loading_bar.update('stockdata', 'Data retrieval failed', 1, 'completed')
+        loading_bar.dynamic_update("Data retrieval failed", operation="stockdata")
         return {"error": f"No data available for {ticker}"}
     
         # def decide_action(self): #FIXED: HORRIBLE CODE. The one function the AI did
@@ -1548,8 +1577,8 @@ class Agent:
         #     return actions if actions else [{"action": "hold"}]
 
     def _analyze_sentiment(self, ticker):
-        self.loading_bar.update('_analyze_sentiment', 'Analyzing sentiment')
-        self.loading_bar.update(f'Analyzing sentiment for {ticker}')
+        loading_bar.dynamic_update(f"Analyzing sentiment for {ticker}", operation="analyze_sentiment")
+        
         chatgpt_sentiment = self.environment["chatgpt_insights"].get(ticker, "")
         perplexity_sentiment = self.environment["perplexity_insights"].get(ticker, "")
         
@@ -1559,11 +1588,12 @@ class Agent:
         if "bearish" in chatgpt_sentiment:
             sentiment_score -= 0.25
         
-        self.loading_bar.update('_analyze_sentiment', 'Sentiment analysis complete', 1, 'completed')
+        loading_bar.dynamic_update(f"Completed sentiment analysis for {ticker}", operation="analyze_sentiment")
         return max(0, min(1, sentiment_score))
 
     def _analyze_technicals(self, data):
-        self.loading_bar.update('_analyze_technicals', 'Analyzing technical indicators')
+        loading_bar.dynamic_update("Starting technical analysis", operation="analyze_technicals")
+        
         latest = data.iloc[-1]
         score = 0
         
@@ -1587,12 +1617,12 @@ class Agent:
         else:
             score -= 0.2
         
-        self.loading_bar.update('_analyze_technicals', 'Technical analysis complete', 1, 'completed')
+        loading_bar.dynamic_update("Technical analysis complete", operation="analyze_technicals")
         return max(0, min(1, score + 0.5))
 
     def _predict_price(self, data):
-        self.loading_bar.update('_predict_price', 'Predicting future price')
-        self.loading_bar.update('Predicting future price')
+        loading_bar.dynamic_update("Predicting future price", operation="_predict_price")
+        loading_bar.dynamic_update("Predicting future price", operation="_predict_price")
         X = data[['Close', 'SMA_20', 'SMA_50', 'RSI', 'MACD']].values
         y = data['Close'].shift(-1).dropna().values
         
@@ -1607,14 +1637,18 @@ class Agent:
         current_price = data['Close'].iloc[-1]
         predicted_return = (prediction - current_price) / current_price
         
-        self.loading_bar.update('_predict_price', 'Price prediction complete', 1, 'completed')
+        loading_bar.dynamic_update("Price prediction complete", operation="_predict_price")
         return max(0, min(1, (predicted_return + 0.1) / 0.2))
 
     def act(self, decisions):
-        self.loading_bar.update('act', 'Executing decisions')
+        loading_bar.dynamic_update("Starting trade execution", operation="act")
+        
         for decision in decisions:
-            self.loading_bar.update(f'Executing {decision.get("action")} action for {decision.get("ticker")}')
-            if decision.get("action") == "hold":
+            action = decision.get("action")
+            ticker = decision.get("ticker")
+            loading_bar.dynamic_update(f"Processing {action} for {ticker}", operation=f"act.{action}")
+            
+            if action == "hold":
                 print("Action: Hold. No transactions made.")
                 ticker = decision["ticker"]
                 self.hold(ticker)
@@ -1624,7 +1658,7 @@ class Agent:
             price = decision["price"]
             shares = decision["shares"]
 
-            if decision["action"] == "buy":
+            if action == "buy":
                 cost = shares * price
                 if self.balance >= cost:
                     self.balance -= cost
@@ -1645,11 +1679,12 @@ class Agent:
                     print(f"Action: Sold {shares} shares of {ticker} at {price}")
                 else:
                     print(f"Insufficient shares to sell {shares} shares of {ticker}")
-        self.loading_bar.update('act', 'Decisions executed', 1, 'completed')
+        
+        loading_bar.dynamic_update("Trade execution complete", operation="act")
 
     def learn(self):
-        self.loading_bar.update('learn', 'Learning from recent trades')
-        self.loading_bar.update('Learning from recent trades')
+        loading_bar.dynamic_update("Learning from recent trades", operation="learn")
+        loading_bar.dynamic_update("Learning from recent trades", operation="learn")
         recent_trades = self.history[-10:]
         if recent_trades:
             profit_ratio = sum(1 for trade in recent_trades if "Sold" in trade) / len(recent_trades)
@@ -1657,22 +1692,22 @@ class Agent:
                 self.risk_tolerance = min(0.05, self.risk_tolerance * 1.1)
             elif profit_ratio < 0.4:
                 self.risk_tolerance = max(0.01, self.risk_tolerance * 0.9)
-        self.loading_bar.update('learn', 'Learning complete', 1, 'completed')
+        loading_bar.dynamic_update("Learning complete", operation="learn")
 
     def get_portfolio_value(self):
-        self.loading_bar.update('get_portfolio_value', 'Calculating portfolio value')
-        self.loading_bar.update('Calculating portfolio value')
+        loading_bar.dynamic_update("Calculating portfolio value", operation="get_portfolio_value")
+        loading_bar.dynamic_update("Calculating portfolio value", operation="get_portfolio_value")
         total_value = self.balance
         for ticker, shares in self.portfolio.items():
             if ticker in self.environment["stock_data"]:
                 current_price = self.environment["stock_data"][ticker]['Close'].iloc[-1]
                 total_value += shares * current_price
-        self.loading_bar.update('get_portfolio_value', 'Portfolio value calculated', 1, 'completed')
+        loading_bar.dynamic_update("Portfolio value calculated", operation="get_portfolio_value")
         return total_value
 
     def get_performance_report(self):
-        self.loading_bar.update('get_performance_report', 'Generating performance report')
-        self.loading_bar.update('Generating performance report')
+        loading_bar.dynamic_update("Generating performance report", operation="get_performance_report")
+        loading_bar.dynamic_update("Generating performance report", operation="get_performance_report")
         current_value = self.get_portfolio_value()
         initial_value = 100
         total_return = (current_value - initial_value) / initial_value * 100
@@ -1688,21 +1723,22 @@ class Agent:
                 position_value = shares * current_price
                 report += f"  {ticker}: {shares} shares, Value: ${position_value:.2f}\n"
         
-        self.loading_bar.update('get_performance_report', 'Report generated', 1, 'completed')
+        loading_bar.dynamic_update("Report generated", operation="get_performance_report")
         return report
     
     def reason(self, query=None):
-        self.loading_bar.update('reason', 'Starting chain-of-thought reasoning')
-        self.loading_bar.update('Processing reasoning query')
-        if query == None:
+        loading_bar.dynamic_update("Starting reasoning process", operation="reason")
+        
+        if query is None:
             query = self.action_inputs
         response = self.ollama.query_ollama(query)
-        self.loading_bar.update('reason', 'Reasoning complete', 1, 'completed')
+        
+        loading_bar.dynamic_update("Reasoning process complete", operation="reason")
         return response
     
     def test_outputs(self):
-        self.loading_bar.update('test_outputs', 'Testing outputs')
-        self.loading_bar.update('Testing outputs')
+        loading_bar.dynamic_update("Testing outputs", operation="test_outputs")
+        loading_bar.dynamic_update("Testing outputs", operation="test_outputs")
  #       if self.plan == "":
   #          raise "Plan not generated."
     #    if self.active_tickers == []:
@@ -1713,49 +1749,35 @@ class Agent:
  #           raise "No current actions."
         if self.tickers == []:
             raise "No tickers available."
-        self.loading_bar.update('test_outputs', 'Outputs tested', 1, 'completed')
+        loading_bar.dynamic_update("Outputs tested", operation="test_outputs")
 
     def execute_trades(self):
-        self.loading_bar.update('execute_trades', 'Executing trades')
+        loading_bar.dynamic_update("Executing trades", operation="execute_trades")
         self.update_most_recent_action("Executing trades")
         self.act(self.decisons)
         self.spinner_animation(current_stage="ExecuteTrades")
-        self.loading_bar.update('execute_trades', 'Trades executed', 1, 'completed')
+        loading_bar.dynamic_update("Trades executed", operation="execute_trades")
 
-
-
+    # In Agent.begin()
     def begin(self):
-        self.loading_bar.update('begin', 'Starting agent')
-        self.loading_bar.initialize(total_tasks=6)  # 6 phases in total
-        
-        phases = [
-            ("Strategic Planning", self.plan_actions),
-            ("Comprehensive Stock Selection", self.pick_tickers),
-            ("Rigorous Validation", self.test_outputs),
-            ("In-depth Research and Insight Gathering", self.research_and_insight),
-            ("Precise Trade Execution", self.execute_trades),
-            ("Continuous Learning and Adaptation", self.learn)
-        ]
-        
-        self.loading_bar.set_expected_steps([phase[0] for phase in phases])
-        
-        for phase_name, phase_function in phases:
-            self.loading_bar.update(phase_name)
-            try:
-                phase_result = phase_function()
-           #     self._evaluate_phase_result(phase_name, phase_result)
-            except Exception as e:
-                logging.error(f"Error in {phase_name} phase: {e}")
-           #     self._handle_phase_error(phase_name, e)
-                raise e
-            finally:
-                self.loading_bar.update(phase_name)
-                self.loading_bar.remove_completed_step(phase_name)
-        
-        self.loading_bar.stop()
+        with loading_bar:
+            phases = [
+                ("Strategic Planning", self.plan_actions),
+                ("Stock Selection", self.pick_tickers),
+                ("Validation", self.test_outputs),
+                ("Research Analysis", self.research_and_insight),
+                ("Trade Execution", self.execute_trades),
+                ("Learning Phase", self.learn)
+            ]
+            
+            for phase_name, phase_function in phases:
+                loading_bar.dynamic_update(f"Starting {phase_name}", operation=f"begin.{phase_name.lower().replace(' ', '_')}")
+                phase_function()
+                loading_bar.dynamic_update(f"Completed {phase_name}", operation=f"begin.{phase_name.lower().replace(' ', '_')}")
+
         self._generate_comprehensive_report()
         self.finalize_execution()
-        self.loading_bar.update('begin', 'Agent begun', 1, 'completed')
+        loading_bar.dynamic_update("Agent begun", operation="begin")
 
 
 
