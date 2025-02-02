@@ -16,6 +16,8 @@ from sklearn.ensemble import RandomForestRegressor
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 import ollama
+import ollama
+import logging
 import random
 from rich import print as rprint
 from rich.console import Console
@@ -24,6 +26,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.table import Table
 from loading import DynamicLoadingBar
+import json
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -111,38 +114,16 @@ class ChatGPT4o:
         loading_bar.dynamic_update("Preparing OpenAI query", operation="query_OpenAI")
         model = self.default_model if model == "" else model
         role = self.default_role if role == "" else role
-        def test_input_validity(self, model, query, max_tokens, temperature):
 
-            def validate_chatgpt_model(self, model_input):
-                valid_models = [
-                    "gpt-4o", "chatgpt-4o-latest", "gpt-4-0125-preview",
-                    "gpt-4-1106-preview", "gpt-4", "gpt-4-0613",
-                    "gpt-4-0314", "gpt-4o-mini", "gpt-3.5-turbo"
-                ]
-                result = True if model_input in valid_models else False
-                description = f"{"Valid" if result else "Invalid"} ChatGPT model: {model_input}"
-                return result, description
-                
-            def validate_query(self, query_input):
-                result = True if query_input != "" else False
-                description = f"{"Valid" if result else "Invalid"} query provided."
-                return result, description
-                
-            def validate_max_tokens(self, max_tokens_input):
-                result = True if max_tokens_input > 0 else False
-                description = f"{"Valid" if result else "Invalid"} max_tokens: {max_tokens_input}"
-                return result, description
-            
-            def validate_temperature(self, temperature_input):
-                result = True if 0 <= temperature_input <= 1 else False
-                description = f"{"Valid" if result else "Invalid"} temperature: {temperature_input}"
+        def test_input_validity(self, model, query):
+            """Simplified validation focusing only on essential parameters"""
+            def validate_query(query_input):
+                result = bool(query_input.strip())
+                description = f"{'Valid' if result else 'Invalid'} query provided"
                 return result, description
 
             tests = [
-                validate_chatgpt_model(model),
-                validate_query(query),
-                validate_max_tokens(max_tokens),
-                validate_temperature(temperature)
+                validate_query(query)
             ]
 
             for test in tests:
@@ -151,8 +132,8 @@ class ChatGPT4o:
             
             return all([test[0] for test in tests])
 
-        if not test_input_validity(model, query, max_tokens, temperature):
-            return "Invalid input provided. Please check the input parameters."
+        if not test_input_validity(self, model, query):
+            return "Invalid query provided. Please check the input.", False
 
         try:
             response = openai.ChatCompletion.create(
@@ -164,9 +145,9 @@ class ChatGPT4o:
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            output, status =  response.choices[0].message.content, True
+            output, status = response.choices[0].message.content, True
         except Exception as e:
-            output, status =  f"An error occurred: {e}", False
+            output, status = f"An error occurred: {e}", False
         
         loading_bar.dynamic_update("OpenAI query complete", operation="query_OpenAI")
         return output, status
@@ -461,28 +442,34 @@ class Ollama:
         final_reasoning = "\n".join(chain_of_thought)
         loading_bar.dynamic_update("Finalizing chain of thought reasoning", operation="reason")
         loading_bar.dynamic_update("Reasoning complete", operation="reason")
+        os.clear()
+        print("===================================================================")
+        print(final_reasoning)
         return final_reasoning
-
 
     def query_ollama(self, prompt: str) -> str:
         loading_bar.dynamic_update("Querying Ollama", operation="query_ollama")
         try:
-            response = ollama.generate(
-                model = 'llama3.2:1b',
-                prompt=prompt,
-#z                max_tokens=120000,
-#                temperature=0.5,
-                system="You are a financial agent making decisions based on market analysis."
+            response = ollama.chat(
+                model='llama3.2:1b',
+                messages=[
+                    {
+                        'role': 'system',
+                        'content': 'You are a financial agent making decisions based on market analysis.'
+                    },
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                stream=False
             )
             loading_bar.dynamic_update("Ollama query complete", operation="query_ollama")
-            return response['response']
+            print("Formatted content:", response['message']['content'])
+            return response['message']['content']
         except Exception as e:
             logging.error(f"Error querying Ollama: {e}")
             return "An error occurred during the query."
-
-        
-    
-
 
     def _parse_response(self, response: str) -> tuple:
         """Parse response to extract action and parameters."""
@@ -502,64 +489,356 @@ class Ollama:
             logging.error(f"Error parsing response: {e}")
             return None, []
 
-
     def query_ollama_for_plan(self, prompt: str) -> str:
-        loading_bar.dynamic_update("Generating plan with Ollama", operation="query_ollama_for_plan")
+        loading_bar.dynamic_update("Querying Ollama for plan", operation="query_ollama_for_plan")
         try:
-            loading_bar.dynamic_update("Generating plan, Querying Ollama", operation="query_ollama_for_plan")
-            response = ollama.generate(
+            response = ollama.chat(
                 model=self.model,
-                prompt=f"{prompt}\n\nIMPORTANT: Your response MUST start with 'ACTION:' followed by one of these actions: {', '.join(self.action_handlers.keys())}. Then, add 'PARAMS:' followed by the necessary parameters separated by commas.",
-                system="You are a financial agent making decisions based on market analysis. Always respond with an action and parameters in the specified format."
+                messages=[
+                    {
+                        'role': 'system',
+                        'content': 'You are a financial agent. Always respond with ACTION: <action> PARAMS: <parameters>.'
+                    },
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                stream=False
             )
-            loading_bar.dynamic_update("Querying Ollama", operation="query_ollama_for_plan")
-            loading_bar.dynamic_update("Plan generation complete", operation="query_ollama_for_plan")
-            return response['response']
+            
+            content = response['message']['content']
+            print(content)
+            loading_bar.dynamic_update("Received response from Ollama", operation="query_ollama_for_plan")
+            return content
+
         except Exception as e:
             logging.error(f"Error querying Ollama: {e}")
-            return "ACTION: error PARAMS: An error occurred during the query."
-
+            return "ACTION: reason PARAMS: Error occurred, need to reassess"
 
     def make_plan(self, query: str) -> str:
         loading_bar.dynamic_update("Making plan", operation="make_plan")
-        loading_bar.dynamic_update("Generating plan", operation="make_plan")
         if not query:
             raise ValueError("Query cannot be empty")
 
-        loading_bar.dynamic_update("Initializing start time", operation="make_plan")
-        start_time = time.time()
-        loading_bar.dynamic_update("Initializing start time", operation="make_plan")
         loading_bar.dynamic_update("Initializing plan", operation="make_plan")
         plan = []
-        loading_bar.dynamic_update("Initializing plan", operation="make_plan")
+        iteration_count = 0
+        max_iterations = 5  # Reduced max iterations for faster planning
         
         def get_plan():
             return "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
 
         try:
-            while time.time() - start_time < self.max_time:
+            while iteration_count < max_iterations:
+                iteration_count += 1
+                loading_bar.dynamic_update(f"Plan iteration {iteration_count}/{max_iterations}", operation="make_plan")
+                
                 reasoning_prompt = f"""
                 Query: {query}
                 Current plan: {get_plan()}
                 
-                What's the next step in the plan? Be specific and actionable.
+                Provide the next step in the plan using one of these action formats:
+                ACTION: insight PARAMS: <ticker>
+                ACTION: research PARAMS: <ticker>
+                ACTION: reason PARAMS: <query>
+                ACTION: stockdata PARAMS: <ticker>
+                
+                Your response MUST start with 'ACTION:' followed by one of these actions.
                 """
                 
                 response = self.query_ollama_for_plan(reasoning_prompt)
-                next_step = response.strip()
+                if not response.strip():
+                    continue
+                    
+                # Validate action format
+                if self._validate_action_format(response):
+                    plan.append(response.strip())
+                    loading_bar.dynamic_update(f"Added valid action: {response.strip()}", operation="make_plan")
+                else:
+                    # Convert invalid response to reasoning action
+                    formatted_action = f"ACTION: reason PARAMS: {response.strip()}"
+                    plan.append(formatted_action)
+                    loading_bar.dynamic_update(f"Converted to reasoning action", operation="make_plan")
                 
-                if next_step:
-                    plan.append(next_step)
-                
-                if len(plan) >= self.max_iterations:
+                # Check if we have enough valid steps
+                if len(plan) >= 3:  # Minimum 3 steps for a complete plan
                     break
-            loading_bar.dynamic_update("Plan made", operation="make_plan")
+
+            loading_bar.dynamic_update("Plan generation complete", operation="make_plan")
+            print(f'Final plan:\n{get_plan()}')
             return f"Final plan:\n{get_plan()}"
 
         except Exception as e:
             logging.error(f"Error in make_plan: {e}")
-            return f"Error creating plan: {str(e)}"
+            return """
+            ACTION: reason PARAMS: Analyze market conditions
+            ACTION: stockdata PARAMS: SPY
+            ACTION: insight PARAMS: Market overview
+            """
 
+    def _validate_action_format(self, response: str) -> bool:
+        """Validate if response follows the required action format."""
+        action_pattern = r'^ACTION:\s*(insight|research|reason|stockdata)\s*PARAMS:\s*.+$'
+        return bool(re.match(action_pattern, response.strip(), re.IGNORECASE))
+
+    def update_task_progress(self, task, status, advance=0):
+        loading_bar.dynamic_update(f'Updating task: {task}', operation="update_task_progress")
+        
+        # Create task if it doesn't exist
+        if task not in self.task_progresses:
+            self.task_progresses[task] = self.progress.add_task(
+                f"[cyan]{task}", 
+                total=100,
+                status="Pending"
+            )
+        
+        # Update task progress
+        task_id = self.task_progresses[task]
+        current_progress = self.progress.tasks[task_id].completed
+        
+        # Only update if we're actually making progress
+        if advance > 0 or status != self.progress.tasks[task_id].fields['status']:
+            self.progress.update(
+                task_id,
+                advance=advance,
+                status=status,
+                completed=min(current_progress + advance, 100)
+            )
+            
+            # Update overall progress
+            self._update_overall_progress()
+        
+        loading_bar.dynamic_update(f'Task updated: {task} - {status}', operation="update_task_progress")
+
+    def _update_overall_progress(self):
+        """Update overall progress based on individual task completion."""
+        if not self.task_progresses:
+            return
+            
+        total_progress = sum(
+            self.progress.tasks[task_id].completed 
+            for task_id in self.task_progresses.values()
+        )
+        avg_progress = total_progress / len(self.task_progresses)
+        
+        self.progress.update(
+            self.overall_task,
+            completed=avg_progress,
+            status=f"Overall Progress: {avg_progress:.0f}%"
+        )
+
+class PromptManager:
+    def __init__(self, agent):
+        self.agent = agent
+
+    def get_stock_selection_prompt(self):
+        """Generates prompt for initial stock selection."""
+        return f"""
+        You are a financial agent aiming to maximize returns over a 20-year horizon. Your goal is to identify high-risk, high-reward stocks with the greatest long-term potential.
+        Available tickers: {self.agent.tickers}
+        Current portfolio: {self.agent.get_portfolio()}
+        Previous actions: {self.agent.previous_actions}
+        Selected Stocks: {self.agent.portfolio_manager.pending_stocks}
+        
+        Follow these steps to narrow down the stock selection:
+        1. Categorize stocks into sectors and risk levels.
+        2. Identify emerging trends and potentially disruptive technologies.
+        3. Analyze each stock's growth potential, competitive advantage, and financial health.
+        4. Consider macroeconomic factors and long-term industry outlooks.
+        5. Assign a risk-reward score to each stock.
+        6. Progressively eliminate lower-scoring stocks while maintaining diversification.
+        7. Continue narrowing until you have between 30 and 120 high-potential stocks.
+        8. When you have your final selection, use the <select:"TICKERS"> action.
+
+        Available actions:
+        <insight:TICKER>     # Get insights for a specific stock
+        <research:TICKER>    # Get detailed research
+        <reason:"QUERY">     # Analyze specific aspects
+        <stockdata:TICKER>   # Get market data
+        <select:"TICKERS">   # Submit your final stock selection (comma-separated, e.g. "AAPL,MSFT,GOOGL")
+
+        Use the select action only when you have your final list of 30-120 stocks.
+        For intermediate analysis, use the other actions to gather information.
+        """
+
+    def get_research_prompt(self):
+        """Generates prompt for research and analysis."""
+        return f"""
+        You are a sophisticated financial agent tasked with maximizing returns through comprehensive analysis and data-driven decision-making. Analyze the following high-potential stocks:
+        Active tickers: {self.agent.active_tickers}
+        Current portfolio: {self.agent.get_portfolio()}
+
+        For each stock, follow this advanced analysis framework:
+        1. Fundamental Analysis:
+        - Scrutinize financial statements (income statement, balance sheet, cash flow)
+        - Evaluate key financial ratios (P/E, P/B, debt-to-equity, ROE, profit margins)
+        - Assess company's competitive position, market share, and economic moat
+        2. Technical Analysis:
+        - Examine price trends, volume patterns, and advanced momentum indicators
+        - Identify key support and resistance levels, and potential breakout points
+        3. Industry and Market Analysis:
+        - Evaluate sector performance, trends, and cyclicality
+        - Consider macroeconomic factors and their impact on the industry
+        4. Qualitative Factors:
+        - Research management quality, corporate governance, and insider trading patterns
+        - Assess company's innovation pipeline, R&D spending, and growth strategies
+        5. Risk Assessment:
+        - Identify and quantify potential risks (market, financial, operational, regulatory)
+        - Evaluate ESG factors and their potential impact on long-term performance
+        6. Valuation:
+        - Determine intrinsic value using multiple methods (DCF, comparables, sum-of-parts)
+        - Compare to current market price and assess margin of safety
+        7. Investment Decision:
+        - Synthesize all information to make a buy, sell, or hold decision
+        - Provide a detailed rationale and specify position sizing
+
+        Respond with one of these actions:
+        'insight' --> ${r'{ticker and/or query}'}
+        'research' --> ${r'{ticker and/or query}'}
+        'reason' --> query --> {r'${YOUR QUERY HERE}'}
+        'stockdata' --> ${r'{ticker or tickers}'}
+
+        Use insight and research judiciously due to higher cost. Prioritize reasoning and stockdata for initial analysis.
+        Previous plan: {self.agent.plan}
+
+        What your going to want to do is use reasoning a lot to do math and various finance related things and give yourself all the info needed to countiue inside the query.
+        """
+
+    def get_reasoning_prompt(self, context):
+        """Generates prompt for reasoning steps with specific context."""
+        return f"""
+        Based on the current context and analysis:
+        {context}
+
+        Consider the following aspects:
+        1. Market conditions and trends
+        2. Technical indicators and price action
+        3. Fundamental company metrics
+        4. Risk factors and potential catalysts
+        5. Portfolio impact and diversification
+
+        Previous actions and decisions:
+        {self.agent.previous_actions[-5:] if self.agent.previous_actions else "No previous actions"}
+
+        Current portfolio state:
+        {self.agent.get_portfolio()}
+
+        Provide detailed reasoning for the next steps, considering:
+        - Risk management and position sizing
+        - Market timing and entry/exit points
+        - Portfolio balance and sector exposure
+        - Long-term strategic alignment
+        
+        Available functions:
+        'insight' --> ${r'{ticker}'}
+        'research' --> ${r'{ticker}'}
+        'reason' --> query --> {r'${YOUR QUERY HERE}'}
+        'stockdata' --> ${r'{ticker}'}
+
+        Analyze the situation and provide clear, actionable reasoning for the next steps.
+        """
+
+class ActionPhase:
+    def __init__(self, phase_name: str, prompt: str, output: str):
+        self.phase_name = phase_name
+        self.prompt = prompt
+        self.output = output
+        self.timestamp = time.time()
+        
+    def format_action_template(self):
+        """Return formatted action template for consistent responses"""
+        return """
+        Valid action formats:
+        <insight:TICKER>     # For stock insights (1-5 letter ticker)
+        <research:TICKER>    # For detailed research (1-5 letter ticker)
+        <reason:"QUERY">     # For analysis (quote multi-word queries)
+        <stockdata:TICKER>   # For market data (1-5 letter ticker)
+        <select:"TICKERS">   # For stock selection (comma-separated tickers, e.g. "AAPL,MSFT,GOOGL")
+        """
+
+    def __str__(self):
+        return (
+            f"Phase: {self.phase_name}\n"
+            f"Prompt: {self.prompt}\n"
+            f"Output: {self.output}\n"
+            f"Action Templates:\n{self.format_action_template()}"
+        )
+
+class ActionHistory:
+    def __init__(self):
+        self.phases: list[ActionPhase] = []
+        self.current_phase = None
+        
+        # Updated pattern to include select action
+        self.action_pattern = r'''
+            <                           # Opening bracket
+            (?P<action>                 # Action type
+                insight|research|reason|stockdata|select
+            )
+            :                          # Separator
+            (?P<param>                 # Parameter
+                "[^"]*"               # Quoted string
+                |                     # or
+                [A-Z,]{1,300}        # Ticker symbols (increased length for multiple tickers)
+            )
+            >                         # Closing bracket
+        '''
+
+    def start_phase(self, phase_name: str, prompt: str):
+        """Start a new phase with action templates"""
+        self.current_phase = phase_name
+        phase = ActionPhase(phase_name, prompt, "")
+        self.phases.append(phase)
+        return len(self.phases) - 1
+
+    def add_output(self, output: str, phase_idx: int = None):
+        if phase_idx is None:
+            if self.phases:
+                phase_idx = len(self.phases) - 1
+            else:
+                raise ValueError("No active phase to add output to")
+        
+        self.phases[phase_idx].output = output
+
+    def get_context(self, window_size: int = 3) -> str:
+        """Get formatted context with action templates"""
+        recent_phases = self.phases[-window_size:] if self.phases else []
+        context = []
+        
+        for phase in recent_phases:
+            context.append(
+                f"[{phase.phase_name}]\n"
+                f"Prompt: {phase.prompt[:200]}...\n"
+                f"Output: {phase.output[:200]}...\n"
+                f"Valid Actions:\n{phase.format_action_template()}\n"
+                f"{'='*50}"
+            )
+        
+        return "\n".join(context)
+
+    def validate_action(self, action: str, param: str) -> bool:
+        """Validate action parameters"""
+        if action in ['insight', 'research', 'stockdata']:
+            return bool(re.match(r'^[A-Z]{1,5}$', param))
+        elif action == 'reason':
+            return bool(re.match(r'^"[A-Za-z0-9\s\-_]{1,100}"$', param))
+        elif action == 'select':
+            # Remove quotes if present
+            param = param.strip('"')
+            # Validate comma-separated ticker format
+            tickers = param.split(',')
+            return all(
+                re.match(r'^[A-Z]{1,5}$', ticker.strip()) 
+                for ticker in tickers
+            ) and len(tickers) <= 120
+        return False
+
+    def clear(self):
+        self.phases = []
+        self.current_phase = None
+
+# Update Agent class initialization
 class Agent:
     def __init__(self, initial_balance=100, risk_tolerance=0.02):
 
@@ -583,7 +862,9 @@ class Agent:
         # Initalize starting values
         self.portfolio = {}
         self.new_recommendations = []
-        self.history = {}
+        self.history = []  # Initialize empty history list
+        self.trade_history = []  # Separate list for trade history
+        self.risk_tolerance = risk_tolerance  # Initial risk tolerance
         self.active_tickers = []
         self.plan = "" 
         self.previous_actions = []
@@ -604,7 +885,6 @@ class Agent:
             "stockdata": lambda tickers: self.stock_data.get_stock_data(tickers) if tickers else None
         }
 
-        self.risk_tolerance = risk_tolerance
         self.scaler = MinMaxScaler()
         self.model = RandomForestRegressor(n_estimators=100, random_state=42)
         self.tasks = {
@@ -622,6 +902,24 @@ class Agent:
         self.overall_task = None
         self.most_recent_action = "Initializing..."
 
+        self.prompt_manager = PromptManager(self)
+        
+        self.action_history = ActionHistory()
+        self.portfolio_manager = Portfolio()
+        
+        # Initialize progress tracking
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            expand=True
+        )
+        self.overall_task = self.progress.add_task(
+            "[cyan]Overall Progress", 
+            total=100,
+            status="Starting"
+        )
+        self.task_progresses = {}
+        
     def buy(self, ticker, shares, price, min=0, max=0):
         if ticker.empty():
             return
@@ -734,7 +1032,7 @@ class Agent:
         if not self.action_inputs:
             return {"error": "No ticker provided", "sentiment": "neutral", "sentiment_score": 0.0}
             
-        query = f"Provide detailed research analysis for {self.action_inputs}. Include financial metrics, competitive analysis, and growth prospects."
+        query = f"Provide detailed research analysis for query: {self.action_inputs}. Include financial metrics, competitive analysis, and growth prospects."
         response, status = self.perplexity.query_perplexity(query=query)
         if status:
             return self.perplexity.evaluate_response(response)
@@ -830,13 +1128,40 @@ class Agent:
         loading_bar.dynamic_update("Action updated", operation="update_most_recent_action")
 
     def finalize_execution(self):
-        loading_bar.dynamic_update("Finalizing execution", operation="finalize_execution")
-        for task_id in self.task_progresses.values():
-            self.progress.update(task_id, completed=100, status="[bold green]Completed[/bold green]")
-        self.progress.update(self.overall_task, completed=100, status="[bold green]Completed[/bold green]")
-        self.progress.stop()
-        self.console.print(Panel.fit("[bold green]All financial tasks completed successfully.[/bold green]", border_style="green"))
-        loading_bar.dynamic_update("Execution finalized", operation="finalize_execution")
+        """Finalize the execution and clean up."""
+        loading_bar.dynamic_update("Finalizing execution", operation="finalize")
+        
+        try:
+            # Update final status in loading bar
+            loading_bar.dynamic_update(
+                "✅ Execution complete - Check Reports directory for details", 
+                operation="finalize"
+            )
+            
+            # Log completion
+            logging.info("Agent execution completed successfully")
+            
+            # Save final state if needed
+            if hasattr(self, 'portfolio_manager'):
+                self.portfolio_manager.save_state()
+            
+            # Final cleanup
+            self._cleanup()
+            
+        except Exception as e:
+            logging.error(f"Error in finalize_execution: {e}")
+            loading_bar.dynamic_update(
+                f"❌ Error during finalization: {str(e)}", 
+                operation="finalize"
+            )
+
+    def _cleanup(self):
+        """Clean up resources and temporary files."""
+        try:
+            # Clean up any temporary files or resources
+            pass
+        except Exception as e:
+            logging.error(f"Error during cleanup: {e}")
 
     def return_stock_data(self):
         loading_bar.dynamic_update("Returning stock data", operation="return_stock_data")
@@ -910,7 +1235,7 @@ class Agent:
             {self.load_previous_actions()}
             You can request data for tickers and they will be provided to you.
             Step 1: Get starting information from options = [Chatgpt, Perplexity] 
-            Step 1: random.choice(options)
+            Step 1: random.choice(options) 
             Step 1: Goal: Tickers that might be intersting to potentially research or invest in.
             To determine tickers do not guess randomly but instead go for an insight --> 'insight' --> Chatgpt
             For input query let the desired output >> 'insight' >> 'tickers'
@@ -994,85 +1319,58 @@ class Agent:
         loading_bar.dynamic_update("Starting stock selection process", operation="pick_tickers")
         
         try:
-            loading_bar.dynamic_update("Generating initial prompt", operation="pick_tickers.init")
-            initial_prompt = self._generate_initial_prompt()
-            
-            loading_bar.dynamic_update("Querying Ollama for initial analysis", operation="pick_tickers.query")
-            output = self.ollama.query_ollama(initial_prompt)
+            prompt = self.prompt_manager.get_stock_selection_prompt()
+            output = self.ollama.query_ollama(prompt)
             self.previous_actions.append(output)
             
-            selected_stocks = set(self.tickers)
             iteration_count = 0
-            max_iterations = (60*60)//5  # 720 iterations max
+            max_iterations = 25  # Reduced from 720 to 10 iterations maximum
+            selected_stocks = set()
             
             while iteration_count < max_iterations:
                 loading_bar.dynamic_update(
-                    f"Stock selection iteration {iteration_count + 1}/{max_iterations}\n"
-                    f"Current selection size: {len(selected_stocks)} stocks", 
-                    operation=f"pick_tickers.iteration_{iteration_count}"
+                    f"Stock selection iteration {iteration_count + 1}/{max_iterations}", 
+                    operation="pick_tickers.iteration"
                 )
                 
-                try:
-                    loading_bar.dynamic_update("Analyzing Ollama response", operation="pick_tickers.analyze")
-                    actions = self.get_actions(output)
-                    
-                    for action_name, action_func in actions:
-                        loading_bar.dynamic_update(
-                            f"Executing {action_name} action\n"
-                            f"Iteration {iteration_count + 1}/{max_iterations}", 
-                            operation=f"pick_tickers.action.{action_name}"
-                        )
+                actions = self.get_actions(output)
+                for action_name, action_func in actions:
+                    iteration_count += 1
+                    loading_bar.dynamic_update(
+                        f"Stock selection iteration {iteration_count + 1}/{max_iterations}", 
+                        operation="pick_tickers.iteration"
+                    )
+                    if action_name == 'select':
+                        # Parse selected stocks from the parameter
+                        tickers = self.action_inputs.strip('"').split(',')
+                        selected_stocks.update(ticker.strip() for ticker in tickers)
                         
-                        if action_name == 'reason':
-                            refined_output = self.reason(action_func)
-                            self.previous_actions.append(refined_output)
-                            
-                            loading_bar.dynamic_update("Evaluating reasoning output", operation="pick_tickers.evaluate")
-                            if self._should_stop_narrowing(refined_output, selected_stocks):
-                                loading_bar.dynamic_update("Stock selection complete", operation="pick_tickers.complete")
-                                return self._finalize_stock_selection(selected_stocks)
-                            
-                            new_selection = self.extract_selected_stocks(refined_output)
-                            if new_selection:
-                                loading_bar.dynamic_update(
-                                    f"Adjusting stock selection\n"
-                                    f"Previous size: {len(selected_stocks)}\n"
-                                    f"New candidates: {len(new_selection)}", 
-                                    operation="pick_tickers.adjust"
-                                )
-                                selected_stocks = self._evaluate_and_adjust_selection(new_selection, selected_stocks)
-                        
-                        elif action_name in ['insight', 'research', 'stockdata']:
-                            action_result = action_func()
+                        if 30 <= len(selected_stocks) <= 120:
                             loading_bar.dynamic_update(
-                                f"Processing {action_name} results\n"
-                                f"Current selection size: {len(selected_stocks)}", 
-                                operation=f"pick_tickers.process.{action_name}"
+                                f"Valid stock selection found: {len(selected_stocks)} stocks", 
+                                operation="pick_tickers.complete"
                             )
-                            self._incorporate_action_result(action_name, action_result, selected_stocks)
-                    
-                    if 30 <= len(selected_stocks) <= 120:
-                        loading_bar.dynamic_update("Checking if selection is optimal", operation="pick_tickers.check_optimal")
-                        if self._confirm_optimal_set(selected_stocks):
-                            loading_bar.dynamic_update("Optimal selection found", operation="pick_tickers.optimal")
-                            return self._finalize_stock_selection(selected_stocks)
-                    
-                    loading_bar.dynamic_update("Generating refinement prompt", operation="pick_tickers.refine")
-                    output = self.ollama.query_ollama(self._generate_refinement_prompt(selected_stocks))
-                    iteration_count += 1
-                    
-                except Exception as e:
-                    loading_bar.dynamic_update(f"Error in iteration: {str(e)}", operation="pick_tickers.error")
-                    logging.error(f"Error in iteration {iteration_count + 1}: {e}")
-                    iteration_count += 1
-                    continue
-
-            loading_bar.dynamic_update("Maximum iterations reached", operation="pick_tickers.max_reached")
-            return self._handle_max_iterations_reached(selected_stocks)
+                            return list(selected_stocks)
+                    else:
+                        # Handle other actions normally
+                        refined_output = action_func(self.action_inputs)
+                        self.previous_actions.append(refined_output)
+                
+                output = self.ollama.query_ollama(self._generate_refinement_prompt(selected_stocks))
+                iteration_count += 1
+            
+            loading_bar.dynamic_update(
+                "Max iterations reached, using emergency selection", 
+                operation="pick_tickers.timeout"
+            )
+            return self._emergency_stock_selection()
             
         except Exception as e:
-            loading_bar.dynamic_update(f"Error in stock selection: {str(e)}", operation="pick_tickers.error")
             logging.error(f"Error in pick_tickers: {e}")
+            loading_bar.dynamic_update(
+                "Error in stock selection, falling back to emergency selection", 
+                operation="pick_tickers.error"
+            )
             return self._emergency_stock_selection()
         
 
@@ -1101,6 +1399,7 @@ class Agent:
         except Exception as e:
             logging.error(f"Error in emergency stock selection: {e}")
             return list(self.tickers)[:120]  # Absolute fallback
+
     def _extract_selected_stocks(self, output):
         # Use regex to find stock tickers in the output
         ticker_pattern = r'\b[A-Z]{1,5}\b'
@@ -1201,6 +1500,10 @@ class Agent:
 
 
     def _generate_initial_prompt(self):
+        """
+        Generates initial prompt for stock selection process.
+        Used in pick_tickers() method.
+        """
         return f"""
         You are a financial agent aiming to maximize returns over a 20-year horizon. Your goal is to identify high-risk, high-reward stocks with the greatest long-term potential.
         Available tickers: {self.tickers}
@@ -1218,10 +1521,10 @@ class Agent:
         8. Stop the process when you believe you have an optimal set of high-potential stocks within this range.
 
         Use these functions as needed:
-        'insight' --> ${{ticker}}
-        'research' --> ${{ticker}}
+        'insight' --> ${r'{ticker}'}
+        'research' --> ${r'{ticker}'}
         'reason' --> query --> {r'${YOUR QUERY HERE}'}
-        'stockdata' --> ${{ticker}}
+        'stockdata' --> ${r'{ticker}'}
 
         Begin your analysis and stock selection process. Provide detailed reasoning for your decisions.
         """
@@ -1267,284 +1570,196 @@ class Agent:
 
 
     def research_and_insight(self):
-        loading_bar.dynamic_update("Researching and gathering insights", operation="research_and_insight")
-        self.update_most_recent_action("Researching and gathering insights")
-        def generate_initial_prompt():
-            return f"""
-            You are a sophisticated financial agent tasked with maximizing returns through comprehensive analysis and data-driven decision-making. Analyze the following high-potential stocks:
-            Active tickers: {self.active_tickers}
-            Current portfolio: {self.get_portfolio()}
-
-            For each stock, follow this advanced analysis framework:
-            1. Fundamental Analysis:
-            - Scrutinize financial statements (income statement, balance sheet, cash flow)
-            - Evaluate key financial ratios (P/E, P/B, debt-to-equity, ROE, profit margins)
-            - Assess company's competitive position, market share, and economic moat
-            2. Technical Analysis:
-            - Examine price trends, volume patterns, and advanced momentum indicators
-            - Identify key support and resistance levels, and potential breakout points
-            3. Industry and Market Analysis:
-            - Evaluate sector performance, trends, and cyclicality
-            - Consider macroeconomic factors and their impact on the industry
-            4. Qualitative Factors:
-            - Research management quality, corporate governance, and insider trading patterns
-            - Assess company's innovation pipeline, R&D spending, and growth strategies
-            5. Risk Assessment:
-            - Identify and quantify potential risks (market, financial, operational, regulatory)
-            - Evaluate ESG factors and their potential impact on long-term performance
-            6. Valuation:
-            - Determine intrinsic value using multiple methods (DCF, comparables, sum-of-parts)
-            - Compare to current market price and assess margin of safety
-            7. Investment Decision:
-            - Synthesize all information to make a buy, sell, or hold decision
-            - Provide a detailed rationale and specify position sizing
-
-            Available functions:
-            'insight' --> {r"${ticker}"}
-            'research' --> {r"${ticker}"}
-            'reason' --> query --> {r'${YOUR QUERY HERE}'}
-            'stockdata' --> {r"${ticker}"}
-
-            Use insight and research judiciously due to higher cost. Prioritize reasoning and stockdata for initial analysis.
-            Previous plan: {self.plan}
-
-            Begin your analysis. Provide detailed reasoning for each step and action.
-            """
-
-        def reason_with_advanced_chain_of_thought(action_func, chain_of_thought, current_ticker):
-            financial_theory_hints = [
-                "Capital Asset Pricing Model (CAPM) for risk-adjusted returns",
-                "Multi-factor models (e.g., Fama-French Five-Factor Model)",
-                "Beta and volatility analysis, including conditional and time-varying beta",
-                "Dividend Discount Model and Gordon Growth Model for valuation",
-                "Discounted Cash Flow (DCF) analysis with Monte Carlo simulations",
-                "Relative valuation ratios (P/E, EV/EBITDA, P/B) with sector-specific considerations",
-                "Efficient Market Hypothesis and behavioral finance theories",
-                "Modern Portfolio Theory and post-modern portfolio theory",
-                "Advanced technical indicators (Ichimoku Cloud, Fibonacci retracements)",
-                "Fundamental analysis metrics (FCF yield, ROIC, economic value added)",
-                "Industry-specific metrics and benchmarks",
-                "Options-based analysis (implied volatility, put-call parity)"
-            ]
-            
-            prompt = f"""
-            Analyzing: {current_ticker}
-            Previous analysis steps: {' -> '.join(chain_of_thought[-5:])}
-            
-            Consider these advanced financial concepts and methods:
-            {', '.join(financial_theory_hints)}
-            
-            Based on the previous analysis and these concepts:
-            1. What is the next critical step in our analysis?
-            2. What specific calculations or evaluations should we perform to gain deeper insights?
-            3. How does this step contribute to our overall investment thesis and risk management?
-            4. Are there any potential biases, hidden risks, or overlooked factors in our current analysis?
-            5. How can we validate or challenge our current assumptions using alternative data sources or models?
-            6. What contrarian viewpoints should we consider to stress-test our analysis?
-
-            Provide a detailed explanation for your reasoning and next steps, incorporating quantitative and qualitative factors.
-            """
-            
-            response = action_func(prompt)
-            chain_of_thought.append(f"{current_ticker}: {response[:100]}...")
-            return response
-
-        def apply_sentiment_analysis(refined_output, ticker):
-            sentiment, score = self.perplexity.analyze_sentiment(refined_output)
-            sentiment_interpretation = f"""
-            Sentiment Analysis for {ticker}:
-            - Overall Sentiment: {sentiment}
-            - Sentiment Score: {score}
-            
-            Interpretation:
-            - Bullish (score > 0.05): Consider this positive sentiment, but verify with fundamental data and assess if it's priced in.
-            - Bearish (score < -0.05): Investigate reasons for negative sentiment. Is it a short-term reaction or indicative of long-term issues?
-            - Neutral (-0.05 <= score <= 0.05): Market uncertainty detected. Look for potential catalysts and analyze options market for implied volatility.
-
-            Questions to address:
-            1. How does this sentiment align with or contradict our fundamental and technical analysis?
-            2. Is there a divergence between sentiment and stock performance that we can exploit?
-            3. How does this sentiment compare to sector peers, and what might be driving any differences?
-            4. Are there any upcoming events or announcements that could shift this sentiment?
-
-            Incorporate this sentiment analysis into our overall investment thesis, considering its reliability and potential impact on short-term price movements.
-            """
-            return sentiment_interpretation
-
-        def review_decisions(decisions, results):
-            review_prompt = f"""
-            We need to review our investment decisions for the following stocks:
-
-            {decisions}
-
-            Consider the following factors in your review:
-            1. Portfolio Diversification: Assess sector allocation and risk exposure.
-            2. Risk-Adjusted Returns: Evaluate expected returns in relation to potential risks.
-            3. Market Timing: Consider current market conditions and their impact on our decisions.
-            4. Contrarian Opportunities: Identify any potential contrarian plays that may have been overlooked.
-            5. Correlation Analysis: Examine how the chosen stocks correlate with each other and the broader market.
-            6. Liquidity Considerations: Ensure that our positions are appropriately sized for the stocks' liquidity.
-            7. Macro Environment: Re-evaluate decisions in light of current and projected macroeconomic conditions.
-            8. Catalyst Identification: Confirm that we've identified potential near-term and long-term catalysts for each position.
-
-            For each stock, provide:
-            1. A confirmation or revision of the original decision (BUY/SELL/HOLD).
-            2. Any adjustments to position sizing.
-            3. A brief explanation of your reasoning, especially if the decision has changed.
-
-            Present your review in a clear, tabular format.
-            """
-            
-            review_output = self.ollama.query_ollama(review_prompt)
-            reviewed_decisions = self.extract_decisions(review_output)
-            
-            return reviewed_decisions
-
-        prompt = generate_initial_prompt()
-        output = self.ollama.query_ollama(prompt)
-        self.previous_actions.append(output)
-        actions = self.get_actions(output)
-
+        loading_bar.dynamic_update("Starting research and insight analysis", operation="research_and_insight")
+        
         results = {}
-        decisions = {}
-        query_count = 0
-        research_or_insight_used = set()
-        chain_of_thought = []
-
         for ticker in self.active_tickers:
-            loading_bar.dynamic_update(f"Analyzing {ticker} ({len(results)}/{len(self.active_tickers)})", operation="research_and_insight.ticker_analysis")
-            ticker_query_count = 0
-            ticker_data_collected = False
-            ticker_decision_made = False
-
-            loading_bar.dynamic_update(f"Analyzing {ticker}", operation="research_and_insight")
-
-            while not (ticker_data_collected and ticker_decision_made):
-                for action_name, action_func in actions:
-                    if action_name == 'reason':
-                        refined_output = reason_with_advanced_chain_of_thought(action_func, chain_of_thought, ticker)
-                        self.previous_actions.append(refined_output)
-                        
-                        sentiment_interpretation = apply_sentiment_analysis(refined_output, ticker)
-                        self.previous_actions.append(sentiment_interpretation)
-                        
-                        actions = self.get_actions(refined_output)
-                        query_count += 1
-                        ticker_query_count += 1
-
-                        if ticker_query_count >= 20:
-                            decision_prompt = f"""
-                            Based on our comprehensive analysis of {ticker}, including fundamental, technical, and sentiment factors:
-                            1. Summarize the key findings from our analysis, highlighting both bullish and bearish factors.
-                            2. Weigh the pros and cons of investing in this stock, considering risk-adjusted returns.
-                            3. Provide a clear DECISION (BUY, SELL, or HOLD) with a confidence level (Low, Medium, High).
-                            4. Explain the rationale behind this decision, addressing potential risks, growth opportunities, and catalysts.
-                            5. Suggest a position size or adjustment based on the overall portfolio strategy, considering volatility and correlation with other holdings.
-                            6. Specify any risk management measures, such as stop-loss levels or hedging strategies.
-
-                            Format your decision as follows:
-                            DECISION: [BUY/SELL/HOLD]
-                            CONFIDENCE: [Low/Medium/High]
-                            RATIONALE: [Your detailed explanation]
-                            POSITION: [Suggested position size or adjustment]
-                            RISK MANAGEMENT: [Specific risk management measures]
-                            """
-                            decision_output = action_func(decision_prompt)
-                            new_decision = self.extract_decisions(decision_output)
-                            if ticker in new_decision:
-                                decisions[ticker] = new_decision[ticker]
-                                ticker_decision_made = True
-
-                    elif action_name in ['insight', 'research', 'stockdata']:
-                        if not ticker_data_collected:
-                            result = action_func(ticker)
-                            results[ticker] = result
-                            ticker_data_collected = True
-                            if action_name in ['insight', 'research']:
-                                research_or_insight_used.add(ticker)
-
-                    if query_count >= 100 and len(research_or_insight_used) >= len(self.active_tickers) // 3:
-                        break
-
-                if query_count >= 100 and len(research_or_insight_used) >= len(self.active_tickers) // 3:
-                    break
-
-            if query_count >= 100 and len(research_or_insight_used) >= len(self.active_tickers) // 3:
-                break
-
-        if set(decisions.keys()) == set(self.active_tickers):
-            reviewed_decisions = review_decisions(decisions, results)
+            loading_bar.dynamic_update(f"Analyzing {ticker}", operation="research_and_insight.ticker_analysis")
             
-            confirmation_prompt = f"""
-            We have reviewed and potentially revised our decisions for all {len(self.active_tickers)} stocks in our analysis. Here are the final decisions:
-
-            {reviewed_decisions}
-
-            Please perform the following:
-            1. Summarize the overall portfolio strategy based on these final decisions.
-            2. Confirm that we have addressed any potential overexposure to specific sectors or risk factors.
-            3. Verify that the suggested position sizes align with our risk management guidelines.
-            4. Ensure that our portfolio maintains proper diversification and aligns with our investment objectives.
-            5. Identify any remaining concerns or areas that may require ongoing monitoring.
-
-            Respond with CONFIRM if you agree with the final decisions and strategy, or REVIEW if you think we should reconsider any aspects.
-            """
-            confirmation = self.ollama.query_ollama(confirmation_prompt)
-            if "CONFIRM" in confirmation.upper():
-                return reviewed_decisions
-            else:
-                # If further review is needed, we can implement an iterative review process
-                return self.review_decisions(reviewed_decisions, results)
-
-        loading_bar.dynamic_update("Research and insight analysis complete", operation="research_and_insight")
-        return decisions
-    
-    def get_actions(self, output):
-        loading_bar.dynamic_update("Starting action analysis", operation="get_actions")
-        """Parse actions from output text."""
-        try:
-            loading_bar.dynamic_update("Parsing Ollama output", operation="get_actions.parse")
+            # Get sentiment analysis from both models
+            chatgpt_insight = self.chatgpt.query_OpenAI(query=f"Analyze {ticker} stock potential")[0]
+            perplexity_insight = self.perplexity.query_perplexity(query=f"Analyze {ticker} stock potential")[0]
             
-            actions_mapping = {
-                'insight': self.insight,
-                'research': self.research,
-                'reason': self.reason,
-                'stockdata': self.stock_data.get_stock_data
+            # Get sentiment scores from both models
+            chatgpt_sentiment = self.chatgpt.analyze_sentiment(chatgpt_insight)[1]  # Using normalized score
+            perplexity_sentiment = self.perplexity.analyze_sentiment(perplexity_insight)[1]  # Using normalized score
+            
+            # Average the sentiment scores
+            sentiment_score = (chatgpt_sentiment + perplexity_sentiment) / 2
+            
+            # Get technical analysis
+            stock_data = self.stock_data.get_stock_data([ticker])
+            technical_score = self._analyze_technicals(stock_data[ticker])
+            
+            # Calculate position size based on scores
+            position_size = self._calculate_position_size(sentiment_score, technical_score)
+            
+            if position_size > 0:
+                reason = f"Sentiment: {sentiment_score:.2f}, Technical: {technical_score:.2f}"
+                self.portfolio_manager.add_to_pending(ticker, position_size, reason)
+            
+            results[ticker] = {
+                'sentiment': sentiment_score,
+                'technical': technical_score,
+                'position_size': position_size,
+                'chatgpt_insight': chatgpt_insight,
+                'perplexity_insight': perplexity_insight
             }
-
-            actions = []
-            for line_num, line in enumerate(output.splitlines(), 1):
-                loading_bar.dynamic_update(
-                    f"Processing line {line_num}\n"
-                    f"Actions found so far: {len(actions)}", 
-                    operation="get_actions.line"
-                )
-                
-                for key, action in actions_mapping.items():
-                    if key in line.lower():
-                        param_start = line.find("$") + 1 if "$" in line else -1
-                        param_end = line.find("}") if "}" in line else len(line)
-                        if param_start >= 0:
-                            param = line[param_start:param_end].strip()
-                            self.action_inputs = param
-                            actions.append((key, action))
-                            loading_bar.dynamic_update(
-                                f"Found {key} action\n"
-                                f"Parameter: {param}", 
-                                operation=f"get_actions.found.{key}"
-                            )
-
-            loading_bar.dynamic_update(
-                f"Action analysis complete\n"
-                f"Total actions found: {len(actions)}", 
-                operation="get_actions.complete"
-            )
-            return actions
             
+            loading_bar.dynamic_update(f"Completed analysis for {ticker}", operation="research_and_insight.ticker_analysis")
+
+        # Get next action from Ollama with context
+        portfolio_summary = self.portfolio_manager.get_portfolio_summary()
+        context = self.action_history.get_context()
+        
+        next_action_prompt = f"""
+        Previous Analysis Context:
+        {context}
+
+        Current Portfolio Status:
+        {portfolio_summary}
+
+        Analysis Results:
+        {', '.join(f'{ticker}: {details["sentiment"]:.2f}' for ticker, details in results.items())}
+
+        Based on the analysis and current portfolio, what action should be taken next?
+        Consider:
+        1. Portfolio balance and diversification
+        2. Risk management
+        3. Entry/exit timing
+        4. Market conditions
+
+        Respond with one of these actions:
+        <insight:TICKER>     # Get more insights
+        <research:TICKER>    # Deep dive analysis
+        <reason:"QUERY">     # Analyze specific aspect
+        <select:"TICKERS">   # Finalize stock selection
+        """
+        
+        response = self.ollama.query_ollama(next_action_prompt)
+        self.action_history.add_output(response)
+        
+        if self._is_portfolio_complete():
+            loading_bar.dynamic_update(
+                "✅ Portfolio construction complete!\n"
+                f"Selected {len(self.portfolio_manager.pending_stocks)} stocks\n"
+                "Run 'get_portfolio_summary()' for details",
+                operation="research_and_insight.complete"
+            )
+            self.portfolio_manager.confirm_portfolio()
+        
+        return results
+
+    def _is_portfolio_complete(self) -> bool:
+        """Check if portfolio meets completion criteria"""
+        pending = self.portfolio_manager.pending_stocks
+        if not 30 <= len(pending) <= 120:
+            return False
+            
+        # Check sector diversification
+        sectors = self._get_stock_sectors(pending.keys())
+        if len(sectors) < 5:  # Minimum 5 sectors
+            return False
+            
+        # Check position sizes
+        total_shares = sum(details['shares'] for details in pending.values())
+        for details in pending.values():
+            if details['shares'] / total_shares > 0.2:  # No position > 20%
+                return False
+                
+        return True
+
+    def _calculate_position_size(self, sentiment_score: float, technical_score: float) -> int:
+        """Calculate position size based on analysis scores"""
+        combined_score = (sentiment_score + technical_score) / 2
+        if combined_score < 0.4:
+            return 0
+            
+        base_position = 100  # Base position size
+        position_size = int(base_position * combined_score)
+        return min(position_size, 1000)  # Cap at 1000 shares
+
+    def get_actions(self, output: str) -> list:
+        """Parse actions from output text."""
+        loading_bar.dynamic_update("Starting action analysis", operation="get_actions")
+        
+        try:
+            # First try to extract structured actions
+            pattern = r'<(insight|research|reason|stockdata|select):([^>]+)>'
+            matches = re.finditer(pattern, output)
+            actions = []
+            
+            for match in matches:
+                action_key = match.group(1).lower()
+                param = match.group(2).strip().strip('"')
+                if action_key in self.actions:
+                    actions.append((action_key, self.actions[action_key]))
+                    self.action_inputs = param
+                    loading_bar.dynamic_update(f"Found valid {action_key} action", operation="get_actions")
+                    return actions
+
+            # If no structured actions found, create a focused reasoning prompt
+            context_prompt = f"""
+            Current Progress:
+            - Selected stocks: {self.portfolio_manager.pending_stocks if hasattr(self, 'portfolio_manager') else []}
+            - Target: 30-120 high-potential stocks
+            - Previous analysis: {output[:200]}...
+            
+            Based on this context, please provide ONE specific action:
+            <insight:TICKER> - Get insights for a specific stock
+            <research:TICKER> - Get detailed research
+            <stockdata:TICKER> - Get market data
+            <select:TICKER1,TICKER2,...> - Submit final selection (comma-separated)
+            
+            Respond with exactly ONE action in the format shown above.
+            """
+            
+            self.action_inputs = context_prompt
+            return [('reason', self.reason)]
+                
         except Exception as e:
-            loading_bar.dynamic_update(f"Error parsing actions: {str(e)}", operation="get_actions.error")
-            logging.error(f"Error in get_actions: {e}")
-            return []
+            logging.error(f"Error parsing actions: {str(e)}")
+            # Create error recovery prompt
+            recovery_prompt = "Please provide ONE specific action in the format <action:parameter>"
+            self.action_inputs = recovery_prompt
+            return [('reason', self.reason)]
+
+    def query_ollama_until_action(self, prompt, max_attempts=5):
+        """Query Ollama repeatedly until we get a response containing valid actions."""
+        attempt = 1
+        while attempt <= max_attempts:
+            loading_bar.dynamic_update(
+                f"Attempt {attempt}/{max_attempts} to get actionable response from Ollama", 
+                operation="query_ollama.attempt"
+            )
+            
+            response = self.ollama.query_ollama(prompt)
+            loading_bar.dynamic_update(
+                "Checking response for actions...", 
+                operation="query_ollama.check"
+            )
+            
+            actions = self.get_actions(response)
+            if actions:
+                loading_bar.dynamic_update(
+                    f"✅ Found {len(actions)} valid actions on attempt {attempt}", 
+                    operation="query_ollama.success"
+                )
+                return response, actions
+            
+            loading_bar.dynamic_update(
+                f"❌ No valid actions found in response. Retrying...\n"
+                f"Response preview: {response[:100]}...", 
+                operation="query_ollama.retry"
+            )
+            attempt += 1
+            
+        loading_bar.dynamic_update(
+            "⚠️ Max attempts reached. Forcing reasoning action.", 
+            operation="query_ollama.max_attempts"
+        )
+        # Return last response with a forced reasoning action
+        return response, [('reason', self.reason)]
 
     def stockdata(self, ticker):
         loading_bar.dynamic_update(f'Getting data for {ticker}', operation="stockdata")
@@ -1576,49 +1791,74 @@ class Agent:
             
         #     return actions if actions else [{"action": "hold"}]
 
-    def _analyze_sentiment(self, ticker):
-        loading_bar.dynamic_update(f"Analyzing sentiment for {ticker}", operation="analyze_sentiment")
-        
-        chatgpt_sentiment = self.environment["chatgpt_insights"].get(ticker, "")
-        perplexity_sentiment = self.environment["perplexity_insights"].get(ticker, "")
-        
-        sentiment_score = 0.5  # Neutral by default
-        if "bullish" in chatgpt_sentiment:
-            sentiment_score += 0.25
-        if "bearish" in chatgpt_sentiment:
-            sentiment_score -= 0.25
-        
-        loading_bar.dynamic_update(f"Completed sentiment analysis for {ticker}", operation="analyze_sentiment")
-        return max(0, min(1, sentiment_score))
-
     def _analyze_technicals(self, data):
         loading_bar.dynamic_update("Starting technical analysis", operation="analyze_technicals")
         
-        latest = data.iloc[-1]
-        score = 0
-        
-        # SMA crossover
-        if latest['SMA_20'] > latest['SMA_50']:
-            score += 0.2
-        else:
-            score -= 0.2
-        
-        # RSI
-        if 30 < latest['RSI'] < 70:
-            score += 0.1
-        elif latest['RSI'] <= 30:
-            score += 0.2  # Oversold
-        else:
-            score -= 0.2  # Overbought
-        
-        # MACD
-        if latest['MACD'] > latest['Signal']:
-            score += 0.2
-        else:
-            score -= 0.2
-        
-        loading_bar.dynamic_update("Technical analysis complete", operation="analyze_technicals")
-        return max(0, min(1, score + 0.5))
+        try:
+            # Calculate technical indicators
+            data = self._calculate_indicators(data)
+            
+            latest = data.iloc[-1]
+            score = 0
+            
+            # SMA crossover
+            if latest['SMA_20'] > latest['SMA_50']:
+                score += 0.2
+            else:
+                score -= 0.2
+            
+            # RSI
+            if 30 < latest['RSI'] < 70:
+                score += 0.1
+            elif latest['RSI'] <= 30:
+                score += 0.2  # Oversold
+            else:
+                score -= 0.2  # Overbought
+            
+            # MACD
+            if latest['MACD'] > latest['Signal']:
+                score += 0.2
+            else:
+                score -= 0.2
+            
+            loading_bar.dynamic_update("Technical analysis complete", operation="analyze_technicals")
+            return max(0, min(1, score + 0.5))
+            
+        except Exception as e:
+            logging.error(f"Error in technical analysis: {e}")
+            loading_bar.dynamic_update("Technical analysis failed, using neutral score", operation="analyze_technicals")
+            return 0.5  # Return neutral score on error
+
+    def _calculate_indicators(self, data):
+        """Calculate technical indicators for analysis."""
+        try:
+            # Calculate SMAs
+            data['SMA_20'] = data['Close'].rolling(window=20).mean()
+            data['SMA_50'] = data['Close'].rolling(window=50).mean()
+            
+            # Calculate RSI
+            delta = data['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            data['RSI'] = 100 - (100 / (1 + rs))
+            
+            # Calculate MACD
+            exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+            data['MACD'] = exp1 - exp2
+            data['Signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
+            
+            # Forward fill any NaN values
+            data = data.fillna(method='ffill')
+            # Back fill any remaining NaN values at the start
+            data = data.fillna(method='bfill')
+            
+            return data
+            
+        except Exception as e:
+            logging.error(f"Error calculating indicators: {e}")
+            raise
 
     def _predict_price(self, data):
         loading_bar.dynamic_update("Predicting future price", operation="_predict_price")
@@ -1683,16 +1923,95 @@ class Agent:
         loading_bar.dynamic_update("Trade execution complete", operation="act")
 
     def learn(self):
+        """Learn from recent trading history and adjust strategy."""
         loading_bar.dynamic_update("Learning from recent trades", operation="learn")
-        loading_bar.dynamic_update("Learning from recent trades", operation="learn")
-        recent_trades = self.history[-10:]
-        if recent_trades:
-            profit_ratio = sum(1 for trade in recent_trades if "Sold" in trade) / len(recent_trades)
-            if profit_ratio > 0.6:
-                self.risk_tolerance = min(0.05, self.risk_tolerance * 1.1)
-            elif profit_ratio < 0.4:
-                self.risk_tolerance = max(0.01, self.risk_tolerance * 0.9)
-        loading_bar.dynamic_update("Learning complete", operation="learn")
+        
+        try:
+            # Get recent trade recommendations
+            trades_dir = DATA_PATH / 'Trades'
+            if not trades_dir.exists():
+                logging.info("No trade history found - starting fresh")
+                # Initialize default values when no history exists
+                self.risk_tolerance = 0.02  # Default risk tolerance
+                
+                summary = """
+                Learning Phase Summary (Initial)
+                ====================
+                No trading history available
+                Using default parameters:
+                - Risk Tolerance: 0.02
+                - Strategy: Conservative initial approach
+                
+                Ready to begin trading with default settings.
+                """
+                print("\n" + summary)
+                loading_bar.dynamic_update("Initialized with default settings", operation="learn")
+                return
+            
+            # Get most recent trade file
+            trade_files = list(trades_dir.glob('trade_recommendations_*.csv'))
+            if not trade_files:
+                logging.info("No trade files found - using default settings")
+                return
+            
+            latest_trade_file = max(trade_files, key=lambda x: x.stat().st_mtime)
+            
+            try:
+                trades_df = pd.read_csv(latest_trade_file)
+                recent_trades = trades_df.to_dict('records')
+            except Exception as e:
+                logging.error(f"Error reading trade file: {e}")
+                recent_trades = []
+            
+            if recent_trades:
+                # Existing logic for analyzing trades
+                avg_sentiment = sum(float(t['sentiment_score']) for t in recent_trades 
+                                 if t['sentiment_score'] != 'N/A') / len(recent_trades)
+                avg_technical = sum(float(t['technical_score']) for t in recent_trades 
+                                 if t['technical_score'] != 'N/A') / len(recent_trades)
+                
+                # Adjust risk tolerance based on scores
+                if avg_sentiment > 0.6 and avg_technical > 0.6:
+                    self.risk_tolerance = min(0.05, self.risk_tolerance * 1.1)
+                    loading_bar.dynamic_update("Increased risk tolerance", operation="learn")
+                elif avg_sentiment < 0.4 or avg_technical < 0.4:
+                    self.risk_tolerance = max(0.01, self.risk_tolerance * 0.9)
+                    loading_bar.dynamic_update("Decreased risk tolerance", operation="learn")
+                
+                # Generate learning summary with historical data
+                summary = f"""
+                Learning Phase Summary (Historical)
+                ====================
+                Analyzed {len(recent_trades)} recent trades
+                Average Sentiment Score: {avg_sentiment:.2f}
+                Average Technical Score: {avg_technical:.2f}
+                Updated Risk Tolerance: {self.risk_tolerance:.3f}
+                
+                Key Insights:
+                - {'Increased' if self.risk_tolerance > 0.03 else 'Decreased'} risk tolerance based on performance
+                - Most traded sectors: {self._get_most_traded_sectors(recent_trades)}
+                """
+                
+                print("\n" + summary)
+                
+            else:
+                logging.info("No valid trade history - using default settings")
+                loading_bar.dynamic_update("Using default settings", operation="learn")
+            
+            loading_bar.dynamic_update("Learning phase complete", operation="learn")
+            
+        except Exception as e:
+            logging.error(f"Error in learning phase: {e}")
+            loading_bar.dynamic_update(f"Learning phase error: {str(e)}", operation="learn")
+
+    def _get_most_traded_sectors(self, trades):
+        """Helper method to identify most traded sectors."""
+        try:
+            # This would need integration with a sector classification system
+            return "Sector analysis not implemented"
+        except Exception as e:
+            logging.error(f"Error analyzing sectors: {e}")
+            return "Sector analysis failed"
 
     def get_portfolio_value(self):
         loading_bar.dynamic_update("Calculating portfolio value", operation="get_portfolio_value")
@@ -1729,9 +2048,13 @@ class Agent:
     def reason(self, query=None):
         loading_bar.dynamic_update("Starting reasoning process", operation="reason")
         
-        if query is None:
-            query = self.action_inputs
-        response = self.ollama.query_ollama(query)
+        # Add phase to history before querying
+        phase_idx = self.action_history.start_phase("Reasoning", query or self.action_inputs)
+        
+        response = self.ollama.query_ollama(query or self.action_inputs)
+        
+        # Add response to history
+        self.action_history.add_output(response, phase_idx)
         
         loading_bar.dynamic_update("Reasoning process complete", operation="reason")
         return response
@@ -1752,11 +2075,100 @@ class Agent:
         loading_bar.dynamic_update("Outputs tested", operation="test_outputs")
 
     def execute_trades(self):
-        loading_bar.dynamic_update("Executing trades", operation="execute_trades")
-        self.update_most_recent_action("Executing trades")
-        self.act(self.decisons)
-        self.spinner_animation(current_stage="ExecuteTrades")
-        loading_bar.dynamic_update("Trades executed", operation="execute_trades")
+        loading_bar.dynamic_update("Saving trade recommendations", operation="execute_trades")
+        
+        try:
+            # Create trades directory if it doesn't exist
+            trades_dir = DATA_PATH / 'Trades'
+            trades_dir.mkdir(exist_ok=True)
+            
+            # Generate timestamp for filename
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            trades_file = trades_dir / f'trade_recommendations_{timestamp}.csv'
+            
+            # Prepare trade data
+            trade_data = []
+            portfolio_summary = self.portfolio_manager.get_portfolio_summary()
+            
+            for ticker, details in portfolio_summary['pending'].items():
+                trade_data.append({
+                    'timestamp': timestamp,
+                    'ticker': ticker,
+                    'action': 'BUY',  # Default to buy for initial portfolio
+                    'shares': details['shares'],
+                    'reason': details['reason'],
+                    'sentiment_score': details.get('sentiment', 'N/A'),
+                    'technical_score': details.get('technical', 'N/A'),
+                    'status': 'PENDING'
+                })
+            
+            # Save to CSV
+            if trade_data:
+                df = pd.DataFrame(trade_data)
+                df.to_csv(trades_file, index=False)
+                loading_bar.dynamic_update(
+                    f"✅ Saved {len(trade_data)} trade recommendations to {trades_file}", 
+                    operation="execute_trades"
+                )
+                
+                # Generate summary report
+                summary = f"""
+                Trade Recommendations Summary
+                ===========================
+                Total Trades: {len(trade_data)}
+                File Location: {trades_file}
+                Timestamp: {timestamp}
+                
+                Portfolio Overview:
+                - Pending Stocks: {len(portfolio_summary['pending'])}
+                - Total Position Count: {sum(d['shares'] for d in portfolio_summary['pending'].values())}
+                
+                Next Steps:
+                1. Review trades in {trades_file}
+                2. Execute approved trades manually
+                3. Update portfolio status after execution
+                """
+                
+                # Save summary
+                summary_file = trades_dir / f'trade_summary_{timestamp}.txt'
+                with open(summary_file, 'w') as f:
+                    f.write(summary)
+                
+                print("\n" + summary)
+                
+            else:
+                loading_bar.dynamic_update(
+                    "No trades to save", 
+                    operation="execute_trades"
+                )
+                
+        except Exception as e:
+            logging.error(f"Error saving trade recommendations: {e}")
+            loading_bar.dynamic_update(
+                f"❌ Error saving trades: {str(e)}", 
+                operation="execute_trades"
+            )
+
+    def _generate_trade_report(self, trade_data):
+        """Generate a detailed report for each trade recommendation."""
+        report = []
+        for trade in trade_data:
+            report.append(f"""
+            Trade Recommendation for {trade['ticker']}
+            =====================================
+            Action: {trade['action']}
+            Shares: {trade['shares']}
+            
+            Analysis:
+            - Sentiment Score: {trade['sentiment_score']}
+            - Technical Score: {trade['technical_score']}
+            
+            Reasoning:
+            {trade['reason']}
+            
+            Status: {trade['status']}
+            """)
+        return "\n".join(report)
 
     # In Agent.begin()
     def begin(self):
@@ -1777,7 +2189,67 @@ class Agent:
 
         self._generate_comprehensive_report()
         self.finalize_execution()
-        loading_bar.dynamic_update("Agent begun", operation="begin")
+        loading_bar.dynamic_update("✅ Agent execution completed", operation="begin")
+
+    def _generate_comprehensive_report(self):
+        """Generate a comprehensive report of the agent's activities and decisions."""
+        loading_bar.dynamic_update("Generating comprehensive report", operation="generate_report")
+        
+        try:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            reports_dir = DATA_PATH / 'Reports'
+            reports_dir.mkdir(exist_ok=True)
+            
+            report_file = reports_dir / f'comprehensive_report_{timestamp}.txt'
+            
+            # Gather all relevant data
+            portfolio_summary = self.portfolio_manager.get_portfolio_summary() if hasattr(self, 'portfolio_manager') else {}
+            
+            report_sections = [
+                "=================================",
+                "Comprehensive Trading Report",
+                "=================================",
+                f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                "\nTrading Plan:",
+                "-------------",
+                str(self.plan) if hasattr(self, 'plan') else "No plan generated",
+                "\nSelected Tickers:",
+                "----------------",
+                ", ".join(self.active_tickers) if self.active_tickers else "No tickers selected",
+                "\nPortfolio Summary:",
+                "-----------------",
+                f"Pending Trades: {len(portfolio_summary.get('pending', {}))}",
+                f"Current Holdings: {len(portfolio_summary.get('holdings', {}))}",
+                "\nRisk Analysis:",
+                "-------------",
+                f"Current Risk Tolerance: {self.risk_tolerance:.3f}",
+                "\nNext Steps:",
+                "-----------",
+                "1. Review trade recommendations in the Trades directory",
+                "2. Execute approved trades manually",
+                "3. Update portfolio status after execution",
+                "4. Monitor performance and adjust strategy as needed"
+            ]
+            
+            report_content = "\n".join(report_sections)
+            
+            # Save report
+            with open(report_file, 'w') as f:
+                f.write(report_content)
+            
+            # Print summary to console
+            print("\nComprehensive Report Generated:")
+            print(f"Saved to: {report_file}")
+            print("\nKey Highlights:")
+            print(f"- Active Tickers: {len(self.active_tickers)}")
+            print(f"- Pending Trades: {len(portfolio_summary.get('pending', {}))}")
+            print(f"- Risk Tolerance: {self.risk_tolerance:.3f}")
+            
+            loading_bar.dynamic_update("Report generation complete", operation="generate_report")
+            
+        except Exception as e:
+            logging.error(f"Error generating comprehensive report: {e}")
+            loading_bar.dynamic_update("Error generating report", operation="generate_report")
 
 
 
@@ -1786,6 +2258,88 @@ def main():
 
     agent = Agent()
     agent.begin()
+
+class Portfolio:
+    def __init__(self):
+        self.holdings = {}
+        self.pending_stocks = {}
+        self.transaction_history = []
+        self.DATA_PATH = Path(__file__).parent.parent.parent / 'Data'
+
+    def add_to_pending(self, ticker: str, shares: int, reason: str):
+        self.pending_stocks[ticker] = {'shares': shares, 'reason': reason}
+
+    def confirm_portfolio(self):
+        self.holdings.update(self.pending_stocks)
+        self.pending_stocks = {}
+
+    def get_portfolio_summary(self):
+        return {
+            'holdings': self.holdings,
+            'pending': self.pending_stocks
+        }
+
+    def save_state(self):
+        """Save portfolio state to file."""
+        try:
+            # Create portfolio directory if it doesn't exist
+            portfolio_dir = self.DATA_PATH / 'Portfolio'
+            portfolio_dir.mkdir(exist_ok=True)
+            
+            # Generate timestamp for filename
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            state_file = portfolio_dir / f'portfolio_state_{timestamp}.json'
+            
+            # Prepare state data
+            state_data = {
+                'timestamp': timestamp,
+                'holdings': self.holdings,
+                'pending_stocks': self.pending_stocks,
+                'transaction_history': self.transaction_history
+            }
+            
+            # Save to JSON file
+            with open(state_file, 'w') as f:
+                json.dump(state_data, f, indent=4)
+                
+            logging.info(f"Portfolio state saved to {state_file}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error saving portfolio state: {e}")
+            return False
+
+def finalize_execution(self):
+    """Finalize the execution and clean up."""
+    loading_bar.dynamic_update("Finalizing execution", operation="finalize")
+    
+    try:
+        # Update final status in loading bar
+        loading_bar.dynamic_update(
+            "✅ Execution complete - Check Reports directory for details", 
+            operation="finalize"
+        )
+        
+        # Log completion
+        logging.info("Agent execution completed successfully")
+        
+        # Save final portfolio state if there are any holdings or pending trades
+        if hasattr(self, 'portfolio_manager'):
+            portfolio_summary = self.portfolio_manager.get_portfolio_summary()
+            if portfolio_summary['holdings'] or portfolio_summary['pending']:
+                self.portfolio_manager.save_state()
+            else:
+                logging.info("No portfolio state to save - empty portfolio")
+        
+        # Final cleanup
+        self._cleanup()
+        
+    except Exception as e:
+        logging.error(f"Error in finalize_execution: {e}")
+        loading_bar.dynamic_update(
+            f"❌ Error during finalization: {str(e)}", 
+            operation="finalize"
+        )
 
 if __name__ == "__main__":
     main()
