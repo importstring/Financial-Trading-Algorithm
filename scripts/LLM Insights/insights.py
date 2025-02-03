@@ -1324,7 +1324,7 @@ class Agent:
             self.previous_actions.append(output)
             
             iteration_count = 0
-            max_iterations = 25  # Reduced from 720 to 10 iterations maximum
+            max_iterations = 140  # Reduced from 720 to 10 iterations maximum
             selected_stocks = set()
             
             while iteration_count < max_iterations:
@@ -2280,33 +2280,110 @@ class Portfolio:
         }
 
     def save_state(self):
-        """Save portfolio state to file."""
+        """Save all important state variables and trading information."""
+        loading_bar.dynamic_update("Saving agent state", operation="save_state")
+        
         try:
-            # Create portfolio directory if it doesn't exist
-            portfolio_dir = self.DATA_PATH / 'Portfolio'
-            portfolio_dir.mkdir(exist_ok=True)
-            
-            # Generate timestamp for filename
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            state_file = portfolio_dir / f'portfolio_state_{timestamp}.json'
             
-            # Prepare state data
-            state_data = {
+            # Create necessary directories if they don't exist
+            for dir_name in ['Trades', 'Conversations', 'Portfolio', 'Analysis']:
+                dir_path = DATA_PATH / dir_name
+                dir_path.mkdir(exist_ok=True)
+            
+            # Save trading state
+            trading_state = {
+                'timestamp': timestamp,
+                'active_tickers': self.active_tickers,
+                'risk_tolerance': self.risk_tolerance,
+                'plan': self.plan,
+                'previous_actions': self.previous_actions,
+                'current_actions': self.current_actions
+            }
+            
+            with open(DATA_PATH / 'Trades' / f'trading_state_{timestamp}.json', 'w') as f:
+                json.dump(trading_state, f, indent=4)
+                
+            # Save conversation history
+            conversation_data = {
+                'timestamp': timestamp,
+                'action_history': [
+                    {
+                        'phase_name': phase.phase_name,
+                        'prompt': phase.prompt,
+                        'output': phase.output,
+                        'timestamp': phase.timestamp
+                    }
+                    for phase in self.action_history.phases
+                ]
+            }
+            
+            with open(CONVERSION_PATH / f'conversation_{timestamp}.json', 'w') as f:
+                json.dump(conversation_data, f, indent=4)
+                
+            # Save analysis results
+            analysis_data = {
+                'timestamp': timestamp,
+                'sentiment_analysis': {
+                    ticker: {
+                        'sentiment_score': details.get('sentiment'),
+                        'technical_score': details.get('technical'),
+                        'chatgpt_insight': details.get('chatgpt_insight'),
+                        'perplexity_insight': details.get('perplexity_insight')
+                    }
+                    for ticker, details in getattr(self, 'analysis_results', {}).items()
+                }
+            }
+            
+            with open(DATA_PATH / 'Analysis' / f'analysis_{timestamp}.json', 'w') as f:
+                json.dump(analysis_data, f, indent=4)
+                
+            # Save portfolio state
+            portfolio_data = {
                 'timestamp': timestamp,
                 'holdings': self.holdings,
                 'pending_stocks': self.pending_stocks,
                 'transaction_history': self.transaction_history
             }
             
-            # Save to JSON file
-            with open(state_file, 'w') as f:
-                json.dump(state_data, f, indent=4)
+            with open(PORTFOLIO_PATH / f'portfolio_state_{timestamp}.json', 'w') as f:
+                json.dump(portfolio_data, f, indent=4)
                 
-            logging.info(f"Portfolio state saved to {state_file}")
+            # Generate summary report
+            summary = f"""
+            State Save Summary
+            =================
+            Timestamp: {timestamp}
+            
+            Trading State:
+            - Active Tickers: {len(self.active_tickers)}
+            - Risk Tolerance: {self.risk_tolerance}
+            - Previous Actions: {len(self.previous_actions)}
+            
+            Portfolio State:
+            - Holdings: {len(self.holdings)}
+            - Pending Trades: {len(self.pending_stocks)}
+            
+            Conversation History:
+            - Total Phases: {len(self.action_history.phases)}
+            
+            Files Saved:
+            - Trading State: trading_state_{timestamp}.json
+            - Conversation: conversation_{timestamp}.json
+            - Analysis: analysis_{timestamp}.json
+            - Portfolio: portfolio_state_{timestamp}.json
+            """
+            
+            with open(DATA_PATH / 'Trades' / f'save_summary_{timestamp}.txt', 'w') as f:
+                f.write(summary)
+                
+            print("\n" + summary)
+            loading_bar.dynamic_update("State saved successfully", operation="save_state")
             return True
             
         except Exception as e:
-            logging.error(f"Error saving portfolio state: {e}")
+            logging.error(f"Error saving state: {e}")
+            loading_bar.dynamic_update(f"Error saving state: {str(e)}", operation="save_state")
             return False
 
 def finalize_execution(self):
