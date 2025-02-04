@@ -27,6 +27,7 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.table import Table
 from loading import DynamicLoadingBar
 import json
+from openai import OpenAI
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -64,118 +65,203 @@ class ChatGPT4o:
         self.checkmark = "✅"
         self.crossmark = "❌"
         self.api_key_path = API_KEYS_PATH / 'OpenAI.txt'
-        self.default_model = "ChatGPT-4o"
         self.default_role = (
-            "You are a financial analyst who has talked with millions of people about the stock market. You are here to provide insights about the stock market based on your interactions."
-            )
-        self.api_key = self.read_api()
+            "You are a financial analyst with extensive experience in the stock market. \n You provide insights based on your current knowledge."
+        )
+        self.client = None  # Will be initialized in read_api
         self.sia = self._initialize_sentiment_analyzer()
+        self.read_api()  # Initialize OpenAI client
         loading_bar.dynamic_update("Instance initialization complete", operation="ChatGPT4o.__init__")
-        
-    def _initialize_sentiment_analyzer(self):
-        """Initialize VADER sentiment analyzer."""
-        nltk.download('vader_lexicon', quiet=True)
-        return SentimentIntensityAnalyzer()
-
-    def analyze_sentiment(self, statement):
-        loading_bar.dynamic_update("Starting sentiment analysis", operation="analyze_sentiment")
-        sentiment_scores = self.sia.polarity_scores(statement)
-        compound_score = sentiment_scores['compound']
-         
-        if compound_score >= 0.05:
-            sentiment = "Bullish"
-        elif compound_score <= -0.05:
-            sentiment = "Bearish"
-        else:
-            sentiment = "Neutral"
-        
-        normalized_score = compound_score * 2
-        loading_bar.dynamic_update("Sentiment analysis complete", operation="analyze_sentiment")
-        return sentiment, normalized_score
 
     def read_api(self):
+        """Initialize OpenAI client with API key."""
         loading_bar.dynamic_update("Reading API key", operation="read_api")
         try:
             with open(self.api_key_path, 'r') as file:
-                self.api_key = file.read().strip()
-        except FileNotFoundError:
-            loading_bar.dynamic_update("API key file not found", operation="read_api")
-            raise ValueError(f"API key file not found at {self.api_key_path}")
-        
-        if not self.api_key:
-            loading_bar.dynamic_update("Empty API key", operation="read_api")
-            raise ValueError("OpenAI API key is empty")
-        loading_bar.dynamic_update("API key loaded successfully", operation="read_api")
-        loading_bar.dynamic_update("API key read complete", operation="read_api")
-        return self.api_key
+                api_key = file.read().strip()
+                if not api_key:
+                    raise ValueError("OpenAI API key is empty")
+                self.client = OpenAI(api_key=api_key)  # Initialize client with 2025 pattern
+                loading_bar.dynamic_update("API key loaded successfully", operation="read_api")
+                return api_key
+        except (FileNotFoundError, PermissionError) as e:
+            loading_bar.dynamic_update("API key file error", operation="read_api")
+            raise ValueError(f"API key file error: {e}")
+        except Exception as e:
+            loading_bar.dynamic_update("Unexpected error reading API key", operation="read_api")
+            raise ValueError(f"Unexpected error reading API key: {e}")
 
-    
-    def query_OpenAI(self, model="Chatgpt-4o", query="", max_tokens=150, temperature=0.5, role=""):
+    def query_OpenAI(self, model="", query="", max_tokens=150, temperature=0.5, role=""):
+        """Query OpenAI API with 2025 features."""
         loading_bar.dynamic_update("Preparing OpenAI query", operation="query_OpenAI")
-        model = self.default_model if model == "" else model
-        role = self.default_role if role == "" else role
-
-        def test_input_validity(self, model, query):
-            """Simplified validation focusing only on essential parameters"""
-            def validate_query(query_input):
-                result = bool(query_input.strip())
-                description = f"{'Valid' if result else 'Invalid'} query provided"
-                return result, description
-
-            tests = [
-                validate_query(query)
-            ]
-
-            for test in tests:
-                print(f"Test {self.tests}: {self.checkmark if test[0] else self.crossmark} {test[1]}")
-                self.tests += 1
+        
+        # Validate and set model
+        model = self.default_model if not model else model
+        supported_models = {
+            "gpt-4o": {"max_tokens": 128000},  # 128k context window
+            "gpt-4o-realtime-preview": {"max_tokens": 32000},  # For real-time interactions
+            "gpt-4": {"max_tokens": 8000},  # Legacy support
+            "gpt-3.5-turbo": {"max_tokens": 4000},  # Legacy support
+        }
+        
+        if model not in supported_models:
+            raise ValueError(f"Unsupported model: {model}. Available models: {list(supported_models.keys())}")
             
-            return all([test[0] for test in tests])
+        role = self.default_role if not role else role
 
-        if not test_input_validity(self, model, query):
+        def test_input_validity(query_input):
+            """Validate query input."""
+            result = bool(query_input.strip())
+            description = f"{'Valid' if result else 'Invalid'} query provided"
+            print(f"Test {self.tests}: {self.checkmark if result else self.crossmark} {description}")
+            self.tests += 1
+            return result
+
+        if not test_input_validity(query):
             return "Invalid query provided. Please check the input.", False
 
         try:
-            response = openai.ChatCompletion.create(
+            # Using 2025 OpenAI client pattern
+            response = self.client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": role},
                     {"role": "user", "content": query}
                 ],
-                max_tokens=max_tokens,
+                max_tokens=min(max_tokens, supported_models[model]["max_tokens"]),
                 temperature=temperature
             )
-            output, status = response.choices[0].message.content, True
+            output = response.choices[0].message.content
+            status = True
+            
+        except openai.BadRequestError as e:
+            output, status = f"Invalid request: {e}", False
+        except openai.AuthenticationError:
+            output, status = "Authentication failed. Check your API key.", False
+        except openai.RateLimitError:
+            output, status = "Rate limit exceeded. Please try again later.", False
         except Exception as e:
-            output, status = f"An error occurred: {e}", False
+            output, status = f"An unexpected error occurred: {e}", False
         
         loading_bar.dynamic_update("OpenAI query complete", operation="query_OpenAI")
         return output, status
 
+    def analyze_sentiment(self, statement):
+        """Analyze sentiment with enhanced accuracy."""
+        loading_bar.dynamic_update("Starting sentiment analysis", operation="analyze_sentiment")
+        
+        try:
+            # First get VADER sentiment
+            sentiment_scores = self.sia.polarity_scores(statement)
+            compound_score = sentiment_scores['compound']
+            
+            # Then get GPT-4o's analysis for better accuracy
+            sentiment_prompt = f"""
+            Analyze the market sentiment in this statement. Consider technical factors, market psychology, and economic indicators:
+            "{statement}"
+            
+            Rate the sentiment on a scale from -1 (extremely bearish) to +1 (extremely bullish).
+            Respond with only the numerical score.
+            """
+            
+            gpt_score, success = self.query_OpenAI(
+                model="gpt-4o",
+                query=sentiment_prompt,
+                max_tokens=10,
+                temperature=0.3
+            )
+            
+            if success:
+                try:
+                    gpt_score = float(gpt_score.strip())
+                    # Combine VADER and GPT-4o scores with more weight to GPT-4o
+                    final_score = (compound_score + 2 * gpt_score) / 3
+                except ValueError:
+                    final_score = compound_score
+            else:
+                final_score = compound_score
+            
+            # Determine sentiment category
+            if final_score >= 0.05:
+                sentiment = "Bullish"
+            elif final_score <= -0.05:
+                sentiment = "Bearish"
+            else:
+                sentiment = "Neutral"
+            
+            # Normalize to 0-1 range for consistency
+            normalized_score = (final_score + 1) / 2
+            
+            loading_bar.dynamic_update("Sentiment analysis complete", operation="analyze_sentiment")
+            return sentiment, normalized_score
+            
+        except Exception as e:
+            logging.error(f"Error in sentiment analysis: {e}")
+            loading_bar.dynamic_update("Error in sentiment analysis", operation="analyze_sentiment")
+            return "Neutral", 0.5
+
     def evaluate_response(self, response):
+        """Evaluate response with enhanced analysis."""
         loading_bar.dynamic_update("Evaluating response", operation="evaluate_response")
-        """
-        Evaluate response from ChatGPT-4o API and return insights with sentiment analysis.
-        """
+        
         try:
             if not response:
                 return "No response received."
             if "error" in str(response).lower():
                 return "The response contains an error."
             
+            # Get sentiment analysis
             sentiment, score = self.analyze_sentiment(str(response))
-            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
-            return {
+            
+            # Extract key insights using GPT-4o
+            insight_prompt = f"""
+            Analyze this market-related text and extract key insights:
+            "{str(response)}"
+            
+            Focus on:
+            1. Technical indicators
+            2. Market trends
+            3. Risk factors
+            4. Action recommendations
+            
+            Format as JSON with these keys: technical, trends, risks, recommendations
+            """
+            
+            insights, success = self.query_OpenAI(
+                model="gpt-4o",
+                query=insight_prompt,
+                max_tokens=5000,
+                temperature=0.3
+            )
+            
+            result = {
                 "text": str(response),
                 "sentiment": sentiment,
-                "sentiment_score": score
+                "sentiment_score": score,
+                "insights": insights if success else "Could not extract insights"
             }
+            
+            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
+            return result
+            
         except Exception as e:
             logging.error(f"Error evaluating response: {e}")
-            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
+            loading_bar.dynamic_update("Error in response evaluation", operation="evaluate_response")
             return "Error during evaluation."
 
-        
+    def _initialize_sentiment_analyzer(self):
+        """Initialize VADER sentiment analyzer with error handling."""
+        loading_bar.dynamic_update("Initializing sentiment analyzer", operation="initialize_sentiment")
+        try:
+            # Download VADER lexicon quietly
+            nltk.download('vader_lexicon', quiet=True)
+            analyzer = SentimentIntensityAnalyzer()
+            loading_bar.dynamic_update("Sentiment analyzer initialized", operation="initialize_sentiment")
+            return analyzer
+        except Exception as e:
+            logging.error(f"Error initializing sentiment analyzer: {e}")
+            loading_bar.dynamic_update("Error initializing sentiment analyzer", operation="initialize_sentiment")
+            raise RuntimeError(f"Failed to initialize sentiment analyzer: {e}")
 
 class Perplexity:
     def __init__(self):  
@@ -183,7 +269,7 @@ class Perplexity:
         self.checkmark = "✅"
         self.crossmark = "❌"
         self.api_key_path = API_KEYS_PATH / 'Perplexity.txt'
-        self.default_model = "llama-3.1-sonar-small-128k-online"
+        self.default_model = "llama-3-sonar-large-32k-chat"
         self.default_role = (
             "You are an AI financial analyst providing market insights based on extensive data analysis."
         )
@@ -202,25 +288,21 @@ class Perplexity:
                 return api_key
         except FileNotFoundError:
             raise ValueError(f"API key file not found at {self.api_key_path}")
-        loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
+        finally:
+            loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
 
     def query_perplexity(self, model: str = "", query: str = "", 
-                        max_tokens: int = 150, temperature: float = 0.5, 
-                        role: str = "") -> Tuple[str, bool]:
+                        max_tokens: int = 300, temperature: float = 0.7) -> Tuple[str, bool]:
         loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
-        """
-        Query the Perplexity API with validation and caching.
-        Returns tuple of (response_text, success_status)
-        """
-        model = self.default_model if model == "" else model
-        role = self.default_role if role == "" else role
-
-        cache_key = f"{query}_{model}_{max_tokens}_{temperature}_{role}"
+        
+        model = model or self.default_model
+        cache_key = f"{model}-{hash(query)}-{max_tokens}-{temperature}"
+        
         if cache_key in self.cache:
             return self.cache[cache_key], True
 
-        if not self._test_input_validity(model, query, max_tokens, temperature):
-            return "Invalid input provided. Please check the input parameters.", False
+        if not self._validate_inputs(model, query, max_tokens, temperature):
+            return "Invalid input parameters", False
 
         try:
             headers = {
@@ -229,102 +311,102 @@ class Perplexity:
             }
             payload = {
                 "model": model,
-                "query": query,
+                "messages": [
+                    {"role": "system", "content": self.default_role},
+                    {"role": "user", "content": query}
+                ],
                 "max_tokens": max_tokens,
-                "temperature": temperature,
-                "role": role
+                "temperature": temperature
             }
+            
             response = requests.post(
-                "https://api.perplexity.ai/query",
+                "https://api.perplexity.ai/chat/completions",
                 headers=headers,
                 json=payload
             )
             response.raise_for_status()
+            
             result = response.json()
-            output = result.get('response', '')
+            output = result['choices'][0]['message']['content']
             self.cache[cache_key] = (output, True)
-            loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
             return output, True
+            
         except requests.exceptions.RequestException as e:
-            error_msg = f"API request failed: {str(e)}"
+            error_msg = f"API Error: {str(e)}"
             logging.error(error_msg)
             return error_msg, False
+        finally:
+            loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
 
-
-    def _test_input_validity(self, model: str, query: str, 
-                           max_tokens: int, temperature: float) -> bool:
-        """Validate input parameters for the API request."""
-        def validate_perplexity_model(model_input: str) -> Tuple[bool, str]:
-            valid_models = [
-                "llama-3.1-sonar-small-128k-online",
-                "llama-3.1-sonar-large-128k-online", 
-                "llama-3.1-sonar-huge-128k-online"
-            ] # Other models can be added but I don't have access to them as I am not on their beta program
-            result = model_input in valid_models
-            description = f"{'Valid' if result else 'Invalid'} Perplexity model: {model_input}"
-            return result, description
-
+    def _validate_inputs(self, model: str, query: str, 
+                        max_tokens: int, temperature: float) -> bool:
+        """Validate all input parameters according to API requirements"""
         tests = [
-            validate_perplexity_model(model),
-            (bool(query.strip()), "Valid query provided." if query.strip() else "Invalid query."),
-            (max_tokens > 0, f"{'Valid' if max_tokens > 0 else 'Invalid'} max_tokens: {max_tokens}"),
-            (0 <= temperature <= 1, f"{'Valid' if 0 <= temperature <= 1 else 'Invalid'} temperature: {temperature}")
+            self._validate_model(model),
+            (bool(query.strip()), "Valid query" if query.strip() else "Empty query"),
+            (10 <= max_tokens <= 4096, f"Max tokens {max_tokens} out of range"),
+            (0.0 <= temperature <= 1.0, f"Temperature {temperature} out of range")
         ]
 
         for test in tests:
-            print(f"Test {self.tests}: {self.checkmark if test[0] else self.crossmark} {test[1]}")
+            status = "PASS" if test[0] else "FAIL"
+            print(f"Validation {self.tests}: {status} - {test[1]}")
             self.tests += 1
 
         return all(test[0] for test in tests)
 
+    def _validate_model(self, model: str) -> Tuple[bool, str]:
+        """Validate against current Perplexity models"""
+        valid_models = [
+            "llama-3-sonar-small-32k-chat",
+            "llama-3-sonar-large-32k-chat",
+            "codellama-70b-instruct"
+        ]
+        valid = model in valid_models
+        return (valid, f"{'Valid' if valid else 'Invalid'} model: {model}")
+
     def _initialize_sentiment_analyzer(self):
-        """Initialize VADER sentiment analyzer."""
+        """Initialize VADER sentiment analyzer"""
         nltk.download('vader_lexicon', quiet=True)
         return SentimentIntensityAnalyzer()
 
-    def analyze_sentiment(self, statement):
-        loading_bar.dynamic_update("Starting sentiment analysis", operation="analyze_sentiment")
-        """Analyze sentiment of a statement using VADER."""
-        sentiment_scores = self.sia.polarity_scores(statement)
-        compound_score = sentiment_scores['compound']
+    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
+        """Analyze sentiment using VADER with proper score handling"""
+        scores = self.sia.polarity_scores(statement)
+        compound = scores['compound']
         
-        if compound_score >= 0.05:
-            sentiment = "bullish"
-        elif compound_score <= -0.05:
-            sentiment = "bearish"
-        else:
-            sentiment = "neutral"
-        
-        normalized_score = compound_score * 2
-        loading_bar.dynamic_update("Sentiment analysis complete", operation="analyze_sentiment")
-        return sentiment, normalized_score
+        if compound >= 0.05:
+            return "bullish", compound
+        if compound <= -0.05:
+            return "bearish", compound
+        return "neutral", compound
 
-    def evaluate_response(self, response: Union[str, Dict]) -> Dict:
-        loading_bar.dynamic_update("Evaluating Perplexity response", operation="evaluate_response")
-        """
-        Evaluate response from Perplexity API with enhanced error handling.
-        """
+    def evaluate_response(self, response: Union[str, dict]) -> dict:
+        """Comprehensive response evaluation with error handling"""
         try:
-            if not response:
-                return {"error": "No response received", "sentiment": "neutral", "sentiment_score": 0.0}
+            if isinstance(response, dict) and 'error' in response:
+                return response
+                
+            text = response if isinstance(response, str) else response.get('text', '')
+            if not text:
+                return {"error": "Empty response", "sentiment": "neutral"}
             
-            text = response if isinstance(response, str) else str(response)
             sentiment, score = self.analyze_sentiment(text)
-            loading_bar.dynamic_update("Response evaluation complete", operation="evaluate_response")
-            
             return {
                 "text": text,
                 "sentiment": sentiment,
                 "sentiment_score": score,
                 "error": None
             }
+            
         except Exception as e:
-            logging.error(f"Error evaluating response: {e}")
+            logging.error(f"Evaluation error: {str(e)}")
             return {
-                "error": f"Error during evaluation: {str(e)}",
+                "error": f"Evaluation failed: {str(e)}",
                 "sentiment": "neutral",
                 "sentiment_score": 0.0
-            } 
+            }
+
 
 
 class StockData:
@@ -882,7 +964,7 @@ class Agent:
             "research": self.research,
             'insight': self.insight,
             "reason": self.reason,
-            "stockdata": lambda tickers: self.stock_data.get_stock_data(tickers) if tickers else None
+            "stockdata": self.stockdata  # Changed from lambda to method
         }
 
         self.scaler = MinMaxScaler()
@@ -1318,61 +1400,189 @@ class Agent:
     def pick_tickers(self):
         loading_bar.dynamic_update("Starting stock selection process", operation="pick_tickers")
         
+        def analyze_market_sectors():
+            # Get initial market overview from ChatGPT
+            market_query = """
+            Analyze the current market conditions and identify:
+            1. The most promising market sectors
+            2. Key trends and developments
+            3. Potential growth areas
+            4. Risk factors to consider
+            
+            Format your response to highlight specific sectors and explain WHY they are interesting.
+            """
+            market_insight, status = self.chatgpt.query_OpenAI(query=market_query)
+            if not status:
+                logging.error("Failed to get market insight from ChatGPT")
+                return None
+                
+            # Get detailed sector analysis from Perplexity
+            sector_query = f"""
+            Based on this market overview:
+            {market_insight}
+            
+            Provide detailed analysis of each mentioned sector:
+            1. Key players and market leaders
+            2. Emerging companies with potential
+            3. Market share distribution
+            4. Growth metrics and valuations
+            """
+            sector_analysis, status = self.perplexity.query_perplexity(query=sector_query)
+            if not status:
+                logging.error("Failed to get sector analysis from Perplexity")
+                return None
+                
+            return {'market_insight': market_insight, 'sector_analysis': sector_analysis}
+            
+        def identify_potential_tickers(sector_info):
+            # Extract potential tickers from sector analysis
+            initial_prompt = f"""
+            Based on this market and sector analysis:
+            
+            Market Overview:
+            {sector_info['market_insight']}
+            
+            Sector Analysis:
+            {sector_info['sector_analysis']}
+            
+            From our available tickers:
+            {self.tickers}
+            
+            Identify potential stocks to analyze, considering:
+            1. Market leaders in promising sectors
+            2. Emerging players with growth potential
+            3. Undervalued companies with strong fundamentals
+            4. Innovation leaders and disruptive companies
+            
+            Format your response as:
+            <select:"TICKER1,TICKER2,..."> with 40-60 initial tickers for deeper analysis
+            """
+            
+            response = self.ollama.query_ollama(initial_prompt)
+            actions = self.get_actions(response)
+            selected_tickers = set()
+            
+            for action_name, _ in actions:
+                if action_name == 'select':
+                    tickers = self.action_inputs.strip('"').split(',')
+                    selected_tickers.update(ticker.strip() for ticker in tickers)
+            
+            return list(selected_tickers)
+            
+        def analyze_selected_tickers(tickers):
+            analyzed_tickers = {}
+            
+            for ticker in tickers:
+                loading_bar.dynamic_update(f"Analyzing {ticker}", operation="pick_tickers.analysis")
+                
+                # Get stock data
+                stock_data = self.stock_data.get_stock_data([ticker])
+                if not stock_data or ticker not in stock_data:
+                    continue
+                    
+                data_df = stock_data[ticker]
+                recent_data = data_df.tail(5)
+                
+                # Get company insights from ChatGPT
+                company_query = f"""
+                Analyze {ticker} considering:
+                - Recent price: ${float(recent_data['Close'].iloc[-1]):.2f}
+                - Price change: {float(recent_data['Close'].pct_change().iloc[-1] * 100):.2f}%
+                - Volume: {int(recent_data['Volume'].iloc[-1]):,}
+                
+                Focus on:
+                1. Company's market position
+                2. Growth potential
+                3. Competitive advantages
+                4. Risks and challenges
+                """
+                company_insight, _ = self.chatgpt.query_OpenAI(query=company_query)
+                
+                # Get detailed analysis from Perplexity
+                analysis_query = f"""
+                Provide detailed analysis of {ticker} including:
+                1. Financial health and metrics
+                2. Industry position and market share
+                3. Growth trajectory and catalysts
+                4. Risk assessment
+                """
+                detailed_analysis, _ = self.perplexity.query_perplexity(query=analysis_query)
+                
+                analyzed_tickers[ticker] = {
+                    'stock_data': stock_data[ticker].to_dict(),
+                    'company_insight': company_insight,
+                    'detailed_analysis': detailed_analysis
+                }
+            
+            return analyzed_tickers
+            
+        def make_final_selection(analyzed_tickers):
+            selection_prompt = f"""
+            We've analyzed {len(analyzed_tickers)} potential stocks.
+            
+            For each stock, we have:
+            {json.dumps({t: {
+                'insight': a['company_insight'][:200] + "...",
+                'analysis': a['detailed_analysis'][:200] + "..."
+            } for t, a in analyzed_tickers.items()}, indent=2)}
+            
+            Select the most promising 30-120 stocks considering:
+            1. Diversification across sectors
+            2. Mix of established leaders and growth potential
+            3. Risk-reward balance
+            4. Market conditions and trends
+            
+            Provide your selection as:
+            <select:"TICKER1,TICKER2,...">
+            
+            Include a brief explanation of why each stock was selected.
+            """
+            
+            response = self.ollama.query_ollama(selection_prompt)
+            actions = self.get_actions(response)
+            
+            for action_name, _ in actions:
+                if action_name == 'select':
+                    final_tickers = self.action_inputs.strip('"').split(',')
+                    if 30 <= len(final_tickers) <= 120:
+                        self.active_tickers = [t.strip() for t in final_tickers]
+                        return True
+            
+            return False
+        
         try:
-            prompt = self.prompt_manager.get_stock_selection_prompt()
-            output = self.ollama.query_ollama(prompt)
-            self.previous_actions.append(output)
+            # Step 1: Analyze market sectors
+            loading_bar.dynamic_update("Analyzing market sectors", operation="pick_tickers.sectors")
+            sector_info = analyze_market_sectors()
+            if not sector_info:
+                raise ValueError("Failed to analyze market sectors")
             
-            iteration_count = 0
-            max_iterations = 25  # Reduced from 720 to 10 iterations maximum
-            selected_stocks = set()
+            # Step 2: Identify potential tickers
+            loading_bar.dynamic_update("Identifying potential tickers", operation="pick_tickers.identify")
+            potential_tickers = identify_potential_tickers(sector_info)
+            if not potential_tickers:
+                raise ValueError("Failed to identify potential tickers")
             
-            while iteration_count < max_iterations:
-                loading_bar.dynamic_update(
-                    f"Stock selection iteration {iteration_count + 1}/{max_iterations}", 
-                    operation="pick_tickers.iteration"
-                )
-                
-                actions = self.get_actions(output)
-                for action_name, action_func in actions:
-                    iteration_count += 1
-                    loading_bar.dynamic_update(
-                        f"Stock selection iteration {iteration_count + 1}/{max_iterations}", 
-                        operation="pick_tickers.iteration"
-                    )
-                    if action_name == 'select':
-                        # Parse selected stocks from the parameter
-                        tickers = self.action_inputs.strip('"').split(',')
-                        selected_stocks.update(ticker.strip() for ticker in tickers)
-                        
-                        if 30 <= len(selected_stocks) <= 120:
-                            loading_bar.dynamic_update(
-                                f"Valid stock selection found: {len(selected_stocks)} stocks", 
-                                operation="pick_tickers.complete"
-                            )
-                            return list(selected_stocks)
-                    else:
-                        # Handle other actions normally
-                        refined_output = action_func(self.action_inputs)
-                        self.previous_actions.append(refined_output)
-                
-                output = self.ollama.query_ollama(self._generate_refinement_prompt(selected_stocks))
-                iteration_count += 1
+            # Step 3: Analyze selected tickers
+            loading_bar.dynamic_update("Analyzing selected tickers", operation="pick_tickers.analyze")
+            analyzed_tickers = analyze_selected_tickers(potential_tickers)
+            if not analyzed_tickers:
+                raise ValueError("Failed to analyze selected tickers")
+            
+            # Step 4: Make final selection
+            loading_bar.dynamic_update("Making final selection", operation="pick_tickers.select")
+            if not make_final_selection(analyzed_tickers):
+                raise ValueError("Failed to make final selection")
             
             loading_bar.dynamic_update(
-                "Max iterations reached, using emergency selection", 
-                operation="pick_tickers.timeout"
+                f"✅ Selected {len(self.active_tickers)} stocks for analysis",
+                operation="pick_tickers.complete"
             )
-            return self._emergency_stock_selection()
+            return self.active_tickers
             
         except Exception as e:
             logging.error(f"Error in pick_tickers: {e}")
-            loading_bar.dynamic_update(
-                "Error in stock selection, falling back to emergency selection", 
-                operation="pick_tickers.error"
-            )
             return self._emergency_stock_selection()
-        
 
     def _emergency_stock_selection(self):
         logging.warning("Performing emergency stock selection")
@@ -1573,71 +1783,192 @@ class Agent:
         loading_bar.dynamic_update("Starting research and insight analysis", operation="research_and_insight")
         
         results = {}
-        for ticker in self.active_tickers:
-            loading_bar.dynamic_update(f"Analyzing {ticker}", operation="research_and_insight.ticker_analysis")
+        chain_of_thought = []
+        
+        def analyze_ticker(ticker):
+            loading_bar.dynamic_update(f"Starting analysis chain for {ticker}", operation="analyze_ticker")
             
-            # Get sentiment analysis from both models
-            chatgpt_insight = self.chatgpt.query_OpenAI(query=f"Analyze {ticker} stock potential")[0]
-            perplexity_insight = self.perplexity.query_perplexity(query=f"Analyze {ticker} stock potential")[0]
-            
-            # Get sentiment scores from both models
-            chatgpt_sentiment = self.chatgpt.analyze_sentiment(chatgpt_insight)[1]  # Using normalized score
-            perplexity_sentiment = self.perplexity.analyze_sentiment(perplexity_insight)[1]  # Using normalized score
-            
-            # Average the sentiment scores
-            sentiment_score = (chatgpt_sentiment + perplexity_sentiment) / 2
-            
-            # Get technical analysis
+            # Get stock data first to have it available throughout the analysis
             stock_data = self.stock_data.get_stock_data([ticker])
-            technical_score = self._analyze_technicals(stock_data[ticker])
-            
-            # Calculate position size based on scores
-            position_size = self._calculate_position_size(sentiment_score, technical_score)
-            
-            if position_size > 0:
-                reason = f"Sentiment: {sentiment_score:.2f}, Technical: {technical_score:.2f}"
-                self.portfolio_manager.add_to_pending(ticker, position_size, reason)
-            
-            results[ticker] = {
-                'sentiment': sentiment_score,
-                'technical': technical_score,
-                'position_size': position_size,
-                'chatgpt_insight': chatgpt_insight,
-                'perplexity_insight': perplexity_insight
+            if not stock_data or ticker not in stock_data:
+                logging.error(f"Could not get stock data for {ticker}")
+                return None
+                
+            # Format stock data summary for conversation
+            data_df = stock_data[ticker]
+            recent_data = data_df.tail(5)  # Last 5 days
+            data_summary = {
+                'latest_close': float(recent_data['Close'].iloc[-1]),
+                'price_change': float(recent_data['Close'].pct_change().iloc[-1] * 100),
+                'volume': int(recent_data['Volume'].iloc[-1]),
+                'avg_volume': int(recent_data['Volume'].mean()),
+                'high_52w': float(data_df['High'].rolling(window=252).max().iloc[-1]),
+                'low_52w': float(data_df['Low'].rolling(window=252).min().iloc[-1])
             }
             
-            loading_bar.dynamic_update(f"Completed analysis for {ticker}", operation="research_and_insight.ticker_analysis")
-
-        # Get next action from Ollama with context
-        portfolio_summary = self.portfolio_manager.get_portfolio_summary()
-        context = self.action_history.get_context()
+            ticker_results = {
+                'analysis_chain': [],
+                'stock_data': data_summary,
+                'raw_data': stock_data[ticker].to_dict()  # Store raw data for detailed analysis
+            }
+            
+            # Initial reasoning about what we need to know, now including stock data context
+            initial_reasoning = self.ollama.query_ollama(f"""
+                I need to analyze {ticker} thoroughly. Here's the current market data:
+                
+                Current Price: ${data_summary['latest_close']:.2f}
+                24h Change: {data_summary['price_change']:.2f}%
+                Volume: {data_summary['volume']:,}
+                Avg Volume: {data_summary['avg_volume']:,}
+                52W High: ${data_summary['high_52w']:.2f}
+                52W Low: ${data_summary['low_52w']:.2f}
+                
+                Let's break this down step by step:
+                1. What does this price action and volume tell us?
+                2. What fundamental data should we look at next?
+                3. What technical indicators would be most relevant?
+                4. What market sentiment factors should we consider?
+                5. What specific questions should we ask ChatGPT and Perplexity?
+                
+                For each step, explain WHY we need this information and HOW it will help our decision.
+                Then, specify which action to take next using one of these formats:
+                <stockdata:TICKER> - Get market data
+                <research:TICKER> - Get detailed Perplexity research
+                <insight:TICKER> - Get ChatGPT market insights
+                <reason:"QUERY"> - Analyze specific aspects
+            """)
+            
+            chain_of_thought.append(f"Initial reasoning for {ticker} with market data: {initial_reasoning}")
+            
+            # Parse and execute the suggested actions
+            actions = self.get_actions(initial_reasoning)
+            
+            for action_name, action_func in actions:
+                try:
+                    self.action_inputs = ticker
+                    result = action_func()
+                    if result:  # Only store result if we got one
+                        ticker_results[action_name] = result
+                        ticker_results['analysis_chain'].append(f"{action_name}: {str(result)[:200]}...")
+                    else:
+                        logging.warning(f"No result from {action_name} for {ticker}")
+                        continue
+                    
+                    # After each action, reason about what we learned and what to do next
+                    reflection = self.ollama.query_ollama(f"""
+                        Based on the {action_name} results for {ticker}:
+                        
+                        Current Market Context:
+                        - Price: ${data_summary['latest_close']:.2f} ({data_summary['price_change']:.2f}%)
+                        - Volume: {data_summary['volume']:,} vs Avg: {data_summary['avg_volume']:,}
+                        - 52W Range: ${data_summary['low_52w']:.2f} - ${data_summary['high_52w']:.2f}
+                        
+                        Last Action Result:
+                        {str(result)[:500] if result else "No result"}
+                        
+                        1. What key insights did we gain from the {action_name}?
+                        2. How does this align with the market data we have?
+                        3. What questions remain unanswered?
+                        4. What additional data would help us make a better decision?
+                        5. Should we:
+                           a) Get more market data (stockdata)
+                           b) Get expert insights (research/insight)
+                           c) Analyze current information (reason)
+                           d) Make a decision
+                        
+                        Provide your next action in the correct format:
+                        <stockdata:TICKER> or <research:TICKER> or <insight:TICKER> or <reason:"QUERY">
+                    """)
+                    
+                    chain_of_thought.append(f"Reflection after {action_name} with market context: {reflection}")
+                    
+                    # Get and execute next action based on reflection
+                    next_actions = self.get_actions(reflection)
+                    for next_action_name, next_action_func in next_actions:
+                        try:
+                            self.action_inputs = ticker
+                            next_result = next_action_func()
+                            if next_result:
+                                ticker_results[f"{next_action_name}_followup"] = next_result
+                                ticker_results['analysis_chain'].append(f"{next_action_name}_followup: {str(next_result)[:200]}...")
+                        except Exception as e:
+                            logging.error(f"Error in follow-up action {next_action_name} for {ticker}: {e}")
+                            continue
+                        
+                except Exception as e:
+                    logging.error(f"Error in action {action_name} for {ticker}: {e}")
+                    continue
+            
+            # Final decision synthesis with market context
+            decision_prompt = f"""
+            We've gathered comprehensive data about {ticker}:
+            
+            Market Data Summary:
+            - Current Price: ${data_summary['latest_close']:.2f}
+            - 24h Change: {data_summary['price_change']:.2f}%
+            - Volume: {data_summary['volume']:,}
+            - Avg Volume: {data_summary['avg_volume']:,}
+            - 52W Range: ${data_summary['low_52w']:.2f} - ${data_summary['high_52w']:.2f}
+            
+            Analysis Chain:
+            {json.dumps(ticker_results['analysis_chain'], indent=2)}
+            
+            Based on all this information:
+            1. How does the current price compare to historical ranges?
+            2. Is the volume indicating unusual activity?
+            3. Synthesize the key findings from our analysis
+            4. Identify any potential risks
+            5. Evaluate the growth potential
+            6. Make a final recommendation with position size
+            
+            Provide your decision in this format:
+            DECISION: [BUY/SELL/HOLD]
+            CONFIDENCE: [Low/Medium/High]
+            POSITION_SIZE: [1-1000]
+            RATIONALE: [Detailed explanation including market data context]
+            """
+            
+            final_decision = self.ollama.query_ollama(decision_prompt)
+            ticker_results['final_decision'] = final_decision
+            
+            loading_bar.dynamic_update(f"Completed analysis chain for {ticker}", operation="analyze_ticker")
+            return ticker_results
         
-        next_action_prompt = f"""
-        Previous Analysis Context:
-        {context}
-
-        Current Portfolio Status:
-        {portfolio_summary}
-
-        Analysis Results:
-        {', '.join(f'{ticker}: {details["sentiment"]:.2f}' for ticker, details in results.items())}
-
-        Based on the analysis and current portfolio, what action should be taken next?
-        Consider:
-        1. Portfolio balance and diversification
-        2. Risk management
-        3. Entry/exit timing
-        4. Market conditions
-
-        Respond with one of these actions:
-        <insight:TICKER>     # Get more insights
-        <research:TICKER>    # Deep dive analysis
-        <reason:"QUERY">     # Analyze specific aspect
-        <select:"TICKERS">   # Finalize stock selection
+        # Analyze each ticker
+        for ticker in self.active_tickers:
+            results[ticker] = analyze_ticker(ticker)
+            
+            # Extract decision and add to portfolio if appropriate
+            try:
+                decision_text = results[ticker]['final_decision']
+                if 'DECISION: BUY' in decision_text:
+                    # Extract position size from decision
+                    position_match = re.search(r'POSITION_SIZE: (\d+)', decision_text)
+                    if position_match:
+                        position_size = int(position_match.group(1))
+                        self.portfolio_manager.add_to_pending(ticker, position_size, decision_text)
+            except Exception as e:
+                logging.error(f"Error processing decision for {ticker}: {e}")
+        
+        # Final portfolio review
+        portfolio_review_prompt = f"""
+        We've analyzed {len(self.active_tickers)} stocks and made these decisions:
+        {json.dumps({t: results[t]['final_decision'] for t in self.active_tickers}, indent=2)}
+        
+        Current portfolio state:
+        {self.portfolio_manager.get_portfolio_summary()}
+        
+        Please review:
+        1. Is our portfolio sufficiently diversified?
+        2. Are our position sizes appropriate?
+        3. Do we need to adjust any decisions?
+        4. What risks should we monitor?
+        
+        Provide specific recommendations for any needed adjustments.
         """
         
-        response = self.ollama.query_ollama(next_action_prompt)
-        self.action_history.add_output(response)
+        final_review = self.ollama.query_ollama(portfolio_review_prompt)
+        results['portfolio_review'] = final_review
         
         if self._is_portfolio_complete():
             loading_bar.dynamic_update(
@@ -1761,35 +2092,18 @@ class Agent:
         # Return last response with a forced reasoning action
         return response, [('reason', self.reason)]
 
-    def stockdata(self, ticker):
-        loading_bar.dynamic_update(f'Getting data for {ticker}', operation="stockdata")
-        """Retrieve historical stock data for analysis."""
-        if ticker in self.stock_data.stock_data:
-            data = self.stock_data.get_stock_data([ticker])
-            loading_bar.dynamic_update("Data retrieved", operation="stockdata")
-            return {ticker: data[ticker]}
-        loading_bar.dynamic_update("Data retrieval failed", operation="stockdata")
-        return {"error": f"No data available for {ticker}"}
-    
-        # def decide_action(self): #FIXED: HORRIBLE CODE. The one function the AI did
-        #     actions = []
-        #     for ticker, data in self.environment["stock_data"].items():
-        #         sentiment_score = self._analyze_sentiment(ticker)
-        #         technical_score = self._analyze_technicals(data)
-        #         prediction = self._predict_price(data)
-                
-        #         overall_score = (sentiment_score + technical_score + prediction) / 3
-                
-        #         if overall_score > 0.7:  # Strong buy signal
-        #             action = self._calculate_buy_amount(ticker, data)
-        #             if action:
-        #                 actions.append(action)
-        #         elif overall_score < 0.3:  # Strong sell signal
-        #             action = self._calculate_sell_amount(ticker, data)
-        #             if action:
-        #                 actions.append(action)
-            
-        #     return actions if actions else [{"action": "hold"}]
+    def stockdata(self):
+        """Get stock data for the current action_inputs ticker."""
+        if not self.action_inputs:
+            return {"error": "No ticker provided"}
+        
+        try:
+            # Handle both single ticker and comma-separated tickers
+            tickers = [t.strip() for t in self.action_inputs.split(',')]
+            return self.stock_data.get_stock_data(tickers)
+        except Exception as e:
+            logging.error(f"Error getting stock data: {e}")
+            return {"error": f"Failed to get stock data: {str(e)}"}
 
     def _analyze_technicals(self, data):
         loading_bar.dynamic_update("Starting technical analysis", operation="analyze_technicals")
@@ -2264,7 +2578,9 @@ class Portfolio:
         self.holdings = {}
         self.pending_stocks = {}
         self.transaction_history = []
+        # Update path to match project structure
         self.DATA_PATH = Path(__file__).parent.parent.parent / 'Data'
+        self.PORTFOLIO_PATH = self.DATA_PATH / 'Portfolio'  # Changed from Databases/Portfolio
 
     def add_to_pending(self, ticker: str, shares: int, reason: str):
         self.pending_stocks[ticker] = {'shares': shares, 'reason': reason}
@@ -2280,33 +2596,54 @@ class Portfolio:
         }
 
     def save_state(self):
-        """Save portfolio state to file."""
+        """Save portfolio state and trading information."""
+        loading_bar.dynamic_update("Saving portfolio state", operation="save_state")
+        
         try:
-            # Create portfolio directory if it doesn't exist
-            portfolio_dir = self.DATA_PATH / 'Portfolio'
-            portfolio_dir.mkdir(exist_ok=True)
-            
-            # Generate timestamp for filename
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            state_file = portfolio_dir / f'portfolio_state_{timestamp}.json'
             
-            # Prepare state data
-            state_data = {
+            # Create portfolio directory if it doesn't exist
+            self.PORTFOLIO_PATH.mkdir(parents=True, exist_ok=True)
+            
+            # Save only portfolio-related state
+            portfolio_data = {
                 'timestamp': timestamp,
                 'holdings': self.holdings,
                 'pending_stocks': self.pending_stocks,
                 'transaction_history': self.transaction_history
             }
             
-            # Save to JSON file
+            # Save portfolio state using correct path
+            state_file = self.PORTFOLIO_PATH / f'portfolio_state_{timestamp}.json'
             with open(state_file, 'w') as f:
-                json.dump(state_data, f, indent=4)
+                json.dump(portfolio_data, f, indent=4)
                 
-            logging.info(f"Portfolio state saved to {state_file}")
+            # Generate summary
+            summary = f"""
+            Portfolio State Save Summary
+            ==========================
+            Timestamp: {timestamp}
+            
+            Portfolio State:
+            - Holdings: {len(self.holdings)}
+            - Pending Trades: {len(self.pending_stocks)}
+            - Transaction History: {len(self.transaction_history)}
+            
+            File Saved:
+            - Portfolio: {state_file}
+            """
+            
+            # Save summary to same directory
+            summary_file = self.PORTFOLIO_PATH / f'save_summary_{timestamp}.txt'
+            with open(summary_file, 'w') as f:
+                f.write(summary)
+                
+            loading_bar.dynamic_update("Portfolio state saved successfully", operation="save_state")
             return True
             
         except Exception as e:
             logging.error(f"Error saving portfolio state: {e}")
+            loading_bar.dynamic_update(f"Error saving portfolio state: {str(e)}", operation="save_state")
             return False
 
 def finalize_execution(self):
