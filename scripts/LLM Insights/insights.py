@@ -14,6 +14,7 @@ from typing import List
 from pandas import Timestamp
 
 import pandas as pd
+from cachetools import LRUCache
 import glob
 import requests
 import numpy as np
