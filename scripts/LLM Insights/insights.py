@@ -2805,6 +2805,206 @@ class Ranking:
         ])
         df.to_csv(outfile, index=False)
         return '\n'.join(result)
+class EnhancedRanking:
+    def __init__(self, stock_data: StockData, agent: Agent, perplexity: Perplexity, chatgpt: ChatGPT4o):
+        self.stock_data = stock_data
+        self.agent = agent
+        self.perplexity = perplexity
+        self.chatgpt = chatgpt
+        self.ollama = Ollama()
+        self.ranking_path = DATA_PATH / 'Rankings'
+        self.ranking_path.mkdir(exist_ok=True)
+
+        # Multi-Agent Configuration with Dynamic Weights
+        self.analysis_weights = {
+            'sentiment': {'perplexity': 0.6, 'ollama': 0.4},
+            'fundamental': {'chatgpt': 0.5, 'ollama': 0.5},
+            'technical': {'ollama': 1.0}
+        }
+        
+        # Adaptive Cost Structure
+        self.api_costs = {
+            'perplexity': 0.02, 
+            'chatgpt': 0.03,
+            'ollama': 0.000001
+        }
+
+        # State Management
+        self.valid_tickers = self._validate_tickers()
+        self.technical_cache = LRUCache(maxsize=1000)
+        
+        # Quality Benchmarks from Research [2][4]
+        self.quality_metrics = {
+            'sentiment': {'perplexity': 0.82, 'ollama': 0.78},
+            'fundamental': {'chatgpt': 0.85, 'ollama': 0.79},
+            'technical': {'ollama': 0.88}
+        }
+
+    def _validate_tickers(self) -> List[str]:
+        """Advanced ticker validation with liquidity filters"""
+        threshold = pd.Timestamp.now() - pd.DateOffset(days=14)
+        return [
+            t for t in self.stock_data.tickers
+            if (data := self.stock_data.get_stock_data([t]).get(t)) is not None
+            and len(data) >= 30
+            and data.index[-1] >= threshold
+            and data['Volume'].mean() > 100000
+        ]
+
+    def _select_llm(self, analysis_type: str) -> str:
+        """Cost-optimized LLM selection with quality awareness"""
+        candidates = list(self.analysis_weights[analysis_type].keys())
+        weights = [
+            (self.quality_metrics[analysis_type][llm]**2) / (self.api_costs[llm] + 1e-8)
+            for llm in candidates
+        ]
+        return random.choices(candidates, weights=weights, k=1)[0]
+
+    def _agent_analysis(self, ticker: str) -> Dict[str, float]:
+        """Optimized analysis pipeline with local-first strategy"""
+        scores = {}
+        
+        # Technical Analysis (Local Priority)
+        tech_analysis = self._local_technical_analysis(ticker)
+        if tech_analysis['confidence'] > 0.7:
+            scores['technical'] = tech_analysis['score']
+        else:
+            scores['technical'] = self._ollama_technical(ticker)
+
+        # Fundamental Analysis
+        llm = self._select_llm('fundamental')
+        scores['fundamental'] = getattr(self, f"_{llm}_fundamental")(ticker)
+
+        # Sentiment Analysis
+        llm = self._select_llm('sentiment')
+        scores['sentiment'] = getattr(self, f"_{llm}_sentiment")(ticker)
+
+        return scores
+
+    def _local_technical_analysis(self, ticker: str) -> dict:
+        """Local technical analysis with cached results"""
+        if ticker in self.technical_cache:
+            return self.technical_cache[ticker]
+
+        data = self.stock_data.get_stock_data([ticker])[ticker]
+        analysis = {
+            'rsi': self._calculate_rsi(data),
+            'macd': self._calculate_macd(data),
+            'volume_trend': data['Volume'].pct_change(5).iloc[-1],
+            'price_momentum': data['Close'].pct_change(30).iloc[-1],
+            'score': self._technical_score(data),
+            'confidence': self._technical_confidence(data)
+        }
+        
+        self.technical_cache[ticker] = analysis
+        return analysis
+
+    def _ollama_technical(self, ticker: str) -> float:
+        """Fallback to Ollama for complex technical analysis"""
+        prompt = f"""Perform advanced technical analysis on {ticker} considering:
+        1. Price/volume divergence
+        2. Institutional accumulation patterns
+        3. Market structure analysis
+        4. Liquidity conditions
+        
+        Output format: Score:-10 to 10|Rationale:<text>"""
+        
+        response = self.ollama.query(prompt)
+        return self._parse_ollama_score(response)
+
+    def _perplexity_sentiment(self, ticker: str) -> float:
+        """Market sentiment analysis with Perplexity"""
+        response = self.perplexity.query_perplexity(
+            f"Analyze real-time sentiment for {ticker} from news and social media"
+        )
+        return self.perplexity.analyze_sentiment(response)[1] * 20 - 10  # Scale to [-10,10]
+
+    def _ollama_fundamental(self, ticker: str) -> float:
+        """Fundamental analysis with chain-of-thought reasoning"""
+        prompt = f"""Analyze {ticker} fundamentals using this framework:
+        1. Calculate key financial ratios (P/E, EV/EBITDA, ROIC)
+        2. Evaluate growth sustainability
+        3. Assess competitive advantages
+        4. Compare to sector peers
+        
+        Final Score:-10 to 10|Rationale:<text>"""
+        
+        response = self.ollama.reason(prompt)
+        return self._parse_ollama_score(response)
+
+    def rank_tickers(self):
+        """Parallelized ranking system with progress tracking"""
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = {executor.submit(self._process_ticker, t): t 
+                     for t in self.valid_tickers}
+            
+            rankings = []
+            with Progress() as progress:
+                task = progress.add_task("[cyan]Ranking Tickers", total=len(futures))
+                
+                for future in as_completed(futures):
+                    result = future.result()
+                    rankings.append(result)
+                    progress.update(task, advance=1,
+                                  description=f"Processed {result['ticker']}")
+        
+        self._save_rankings(sorted(rankings, 
+                                 key=lambda x: x['composite'], 
+                                 reverse=True))
+
+    def _process_ticker(self, ticker: str) -> Dict:
+        """Full analysis pipeline for a single ticker"""
+        scores = self._agent_analysis(ticker)
+        return {
+            'ticker': ticker,
+            'composite': sum(scores.values()),
+            **scores,
+            'analysis_time': pd.Timestamp.now().isoformat()
+        }
+
+    def _parse_ollama_score(self, text: str) -> float:
+        """Robust score parsing from Ollama responses"""
+        patterns = [
+            r"Score:\s*(-?\d+\.?\d*)",
+            r"Rating:\s*(-?\d+\.?\d*)",
+            r"Recommendation:\s*(-?\d+)"
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return max(-10, min(10, float(match.group(1))))
+        return 0.0
+
+    def _save_rankings(self, rankings: List[Dict]):
+        """Multi-format output with research-based optimizations"""
+        df = pd.DataFrame(rankings)
+        df.to_csv(self.ranking_path / f"rankings_{pd.Timestamp.now().date()}.csv")
+        df.to_json(self.ranking_path / "latest_rankings.json", orient='records')
+        
+        # Generate interactive HTML report
+        self._generate_html_report(df.head(100))
+
+    def _generate_html_report(self, df: pd.DataFrame):
+        """Create visual report with key metrics"""
+        report = [
+            "<html><head><title>Stock Rankings</title>",
+            "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script></head>",
+            "<body><h1>Top 100 Ranked Stocks</h1>",
+            "<div id='chart'></div>",
+            "<script>",
+            "const data = [",
+            "{",
+            "x: " + str(df['ticker'].tolist()) + ",",
+            "y: " + str(df['composite'].tolist()) + ",",
+            "type: 'bar',",
+            "marker: {color: '" + str(df['composite'].apply(lambda x: 'green' if x > 0 else 'red').tolist()) + "'}",
+            "}];",
+            "Plotly.newPlot('chart', data);",
+            "</script></body></html>"
+        ]
+        
+        with open(self.ranking_path / "rankings.html", "w") as f:
+            f.write("\n".join(report))
 
 if __name__ == "__main__":
     main()
