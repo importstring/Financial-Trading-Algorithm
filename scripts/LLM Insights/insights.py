@@ -1397,8 +1397,7 @@ class Agent:
             phases[self.phase]()
             loading_bar.dynamic_update("Phase run complete", operation="run_phase")
             rank = Ranking()
-            #TODO: EMPLEMENT LOGIC TO USE THE STOCKDATA CLASS AND RANK CLASS PROPERLY AS TO HAVE ACTUAL TICKERS IN IT
-            rank.rank_tickers()
+            rank = Ranking(self.stock_data, self, self.perplexity, self.chatgpt) # TODO: Fix this
             return
         except KeyError:
             logging.error(f"Invalid phase: {self.phase}")
