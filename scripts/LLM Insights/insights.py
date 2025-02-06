@@ -7,6 +7,12 @@ import logging
 import math
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Union
+
+# Added missing imports (preserving existing ones)
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List
+from pandas import Timestamp
+
 import pandas as pd
 import glob
 import requests
@@ -16,8 +22,6 @@ from sklearn.ensemble import RandomForestRegressor
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 import ollama
-import ollama
-import logging
 import random
 from rich import print as rprint
 from rich.console import Console
@@ -94,7 +98,7 @@ class ChatGPT4o:
     def query_OpenAI(self, model="", query="", max_tokens=150, temperature=0.5, role=""):
         """Query OpenAI API with 2025 features."""
         loading_bar.dynamic_update("Preparing OpenAI query", operation="query_OpenAI")
-        
+
         # Validate and set model
         model = self.default_model if not model else model
         supported_models = {
@@ -612,7 +616,7 @@ class Ollama:
             return "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
 
         try:
-            while iteration_count < max_iterations:
+            while (iteration_count < max_iterations):
                 iteration_count += 1
                 loading_bar.dynamic_update(f"Plan iteration {iteration_count}/{max_iterations}", operation="make_plan")
                 
@@ -1392,6 +1396,9 @@ class Agent:
         try:
             phases[self.phase]()
             loading_bar.dynamic_update("Phase run complete", operation="run_phase")
+            rank = Ranking()
+            #TODO: EMPLEMENT LOGIC TO USE THE STOCKDATA CLASS AND RANK CLASS PROPERLY AS TO HAVE ACTUAL TICKERS IN IT
+            rank.rank_tickers()
             return
         except KeyError:
             logging.error(f"Invalid phase: {self.phase}")
@@ -2356,6 +2363,17 @@ class Agent:
                 position_value = shares * current_price
                 report += f"  {ticker}: {shares} shares, Value: ${position_value:.2f}\n"
         
+        try:
+            ranking = Ranking()
+            ranking_report = ranking.rank_tickers()
+        except Exception as e:
+            ranking_report = f"Failed to generate ranking: {e}"
+        report += (
+            "Performance Report:\n"
+            "# ...other performance metrics...\n\n"
+            "Ticker Ranking:\n"
+            f"{ranking_report}"
+        )
         loading_bar.dynamic_update("Report generated", operation="get_performance_report")
         return report
     
@@ -2677,6 +2695,116 @@ def finalize_execution(self):
             f"❌ Error during finalization: {str(e)}", 
             operation="finalize"
         )
+
+from dataclasses import dataclass
+import pandas as pd
+from typing import Dict, List
+import time
+from pathlib import Path
+
+@dataclass
+class RankedTicker:
+    ticker: str
+    bullish_score: float
+    chatgpt_score: float
+    perplexity_score: float
+    last_price: float
+    volume: int
+    reasons: List[str]
+
+class Ranking:
+    def __init__(self, min_data_days: int = 30):
+        self.stock_data = StockData()
+        self.chatgpt = ChatGPT4o()
+        self.perplexity = Perplexity()
+        self.ollama = Ollama()
+        self.min_data_days = min_data_days
+        self.ranked_tickers: List[RankedTicker] = []
+
+    def filter_stocks(self) -> Dict[str, pd.DataFrame]:
+        """Filter out stocks with insufficient data"""
+        valid_stocks = {}
+        for ticker, data in self.stock_data.stock_data.items():
+            if len(data) >= self.min_data_days and not data.empty:
+                valid_stocks[ticker] = data
+        return valid_stocks
+
+    def _get_bullish_scores(self, ticker: str, data: pd.DataFrame) -> tuple:
+        """Get scores from multiple agents using RAG pattern"""
+        # Agent 1: ChatGPT4o analysis
+        gpt_query = f"Analyze bullish factors for {ticker} with latest price {data['Close'][-1]} and volume {data['Volume'][-1]}"
+        gpt_response, _ = self.chatgpt.query_OpenAI(query=gpt_query)
+        gpt_sentiment, gpt_score = self.chatgpt.analyze_sentiment(gpt_response)
+        
+        # Agent 2: Perplexity analysis
+        px_query = f"Score bullishness (0-1) for {ticker} considering technicals and fundamentals"
+        px_response, _ = self.perplexity.query_perplexity(query=px_query)
+        px_sentiment, px_score = self.perplexity.analyze_sentiment(px_response)
+        
+        # Agent 3: Ollama reasoning
+        reason_prompt = f"""Combine these analyses:
+        - ChatGPT: {gpt_response[:200]}...
+        - Perplexity: {px_response[:200]}...
+        Provide final bullish score (0-1) and 3 reasons for {ticker}"""
+        ollama_reason = self.ollama.query_ollama(reason_prompt)
+        
+        # Combine scores with weighted average
+        combined_score = (gpt_score * 0.4) + (px_score * 0.4) + (float('0.1' in ollama_reason) * 0.2)
+        return combined_score, gpt_score, px_score, [ollama_reason]
+
+    def score_tickers(self):
+        """Score all valid tickers using multi-agent approach"""
+        valid_stocks = self.filter_stocks()
+        for ticker, data in valid_stocks.items():
+            latest = data.iloc[-1]
+            try:
+                bull_score, gpt, px, reasons = self._get_bullish_scores(ticker, data)
+                self.ranked_tickers.append(RankedTicker(
+                    ticker=ticker,
+                    bullish_score=bull_score,
+                    chatgpt_score=gpt,
+                    perplexity_score=px,
+                    last_price=latest['Close'],
+                    volume=latest['Volume'],
+                    reasons=reasons
+                ))
+            except Exception as e:
+                logging.error(f"Error scoring {ticker}: {e}")
+
+    def rank_tickers(self) -> str:
+        """Return ranked results in formatted table"""
+        self.score_tickers()
+        sorted_tickers = sorted(self.ranked_tickers, 
+                              key=lambda x: x.bullish_score, 
+                              reverse=True)
+        
+        result = ["Ranked Stock Recommendations:\n"]
+        result.append("| Ticker | Score | Price | Volume | Top Reason |")
+        result.append("|--------|-------|-------|--------|------------|")
+        
+        for idx, ticker in enumerate(sorted_tickers[:10], 1):
+            main_reason = ticker.reasons[0][:100].replace('\n', ' ') if ticker.reasons else "N/A"
+            result.append(
+                f"| {ticker.ticker} | {ticker.bullish_score:.2f} | "
+                f"${ticker.last_price:.2f} | {ticker.volume:,} | "
+                f"{main_reason}... |"
+            )
+        logs_dir = Path("logs")     
+        print(logs_dir)   
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        outfile = logs_dir / f"ranking_results_{timestamp}.csv"
+        df = pd.DataFrame([
+        {
+            "Ticker": t.ticker,
+            "Score": t.bullish_score,
+            "Last_Price": t.last_price,
+            "Volume": t.volume,
+            "Reasons": " | ".join(t.reasons)
+        }
+        for t in sorted_tickers
+        ])
+        df.to_csv(outfile, index=False)
+        return '\n'.join(result)
 
 if __name__ == "__main__":
     main()
