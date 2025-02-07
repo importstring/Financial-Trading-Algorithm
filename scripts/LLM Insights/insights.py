@@ -2606,7 +2606,8 @@ def main():
 
     agent = Agent()
     agent.begin()
-    
+
+
 
 class Portfolio:
     def __init__(self):
