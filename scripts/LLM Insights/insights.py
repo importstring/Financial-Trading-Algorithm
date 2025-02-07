@@ -666,7 +666,7 @@ class Ollama:
 
     def _validate_action_format(self, response: str) -> bool:
         """Validate if response follows the required action format."""
-        action_pattern = r'^ACTION:\s*(insight|research|reason|stockdata)\s*PARAMS:\s*.+$'
+        action_pattern = r'^ACTION:\s*(insight|research|reason|stockdata|select):([^>]+)>'
         return bool(re.match(action_pattern, response.strip(), re.IGNORECASE))
 
     def update_task_progress(self, task, status, advance=0):
@@ -2511,7 +2511,9 @@ class Agent:
                 ("Validation", self.test_outputs),
                 ("Research Analysis", self.research_and_insight),
                 ("Trade Execution", self.execute_trades),
-                ("Learning Phase", self.learn)
+                ("Learning Phase", self.learn),
+                # Add new phase for ranking
+                ("Ranking Analysis", self.generate_rankings)  # Add this line
             ]
             
             for phase_name, phase_function in phases:
@@ -2582,6 +2584,17 @@ class Agent:
         except Exception as e:
             logging.error(f"Error generating comprehensive report: {e}")
             loading_bar.dynamic_update("Error generating report", operation="generate_report")
+
+    def generate_rankings(self):
+        """Generate and save ticker rankings"""
+        loading_bar.dynamic_update("Generating ticker rankings", operation="generate_rankings")
+        try:
+            ranking = Ranking(self.stock_data, self, self.perplexity, self.chatgpt)
+            ranking.rank_tickers()
+            loading_bar.dynamic_update("Rankings generated and saved", operation="generate_rankings")
+        except Exception as e:
+            logging.error(f"Error generating rankings: {e}")
+            loading_bar.dynamic_update("Error generating rankings", operation="generate_rankings")
 
 
 
@@ -2824,24 +2837,33 @@ class Ranking:
         return self._parse_ollama_score(response)
 
     def rank_tickers(self):
-        """Parallelized ranking system with progress tracking"""
+        """Rank tickers by gathering stock data, filtering outdated stocks, and using agent analysis, then save results."""
+        # Step 1 & 2: Refresh the valid tickers list by filtering out outdated stocks
+        self.valid_tickers = self._validate_tickers()
+        if not self.valid_tickers:
+            print("No valid tickers found. Saving empty ranking list.")
+            # Save empty rankings
+            self._save_rankings([])
+            return
+        
+        # Step 3: Use parallel processing to rank each valid ticker through the agent's analysis
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        rankings = []
         with ThreadPoolExecutor(max_workers=16) as executor:
-            futures = {executor.submit(self._process_ticker, t): t 
-                     for t in self.valid_tickers}
-            
-            rankings = []
+            futures = {executor.submit(self._process_ticker, t): t for t in self.valid_tickers}
+            from rich.progress import Progress
             with Progress() as progress:
                 task = progress.add_task("[cyan]Ranking Tickers", total=len(futures))
-                
                 for future in as_completed(futures):
                     result = future.result()
                     rankings.append(result)
-                    progress.update(task, advance=1,
-                                  description=f"Processed {result['ticker']}")
+                    progress.update(task, advance=1, description=f"Processed {result['ticker']}")
         
-        self._save_rankings(sorted(rankings, 
-                                 key=lambda x: x['composite'], 
-                                 reverse=True))
+        # Sort rankings by composite score in descending order
+        sorted_rankings = sorted(rankings, key=lambda x: x['composite'], reverse=True)
+        
+        # Step 4: Save all ranking data to CSV and log the output
+        self._save_rankings(sorted_rankings)
 
     def _process_ticker(self, ticker: str) -> Dict:
         """Full analysis pipeline for a single ticker"""
@@ -2867,12 +2889,25 @@ class Ranking:
         return 0.0
 
     def _save_rankings(self, rankings: List[Dict]):
-        """Multi-format output with research-based optimizations"""
+        """Save ticker rankings in CSV format to a constant location and create a log file with timestamp and summary output."""
+        import time
         df = pd.DataFrame(rankings)
-        df.to_csv(self.ranking_path / f"rankings_{pd.Timestamp.now().date()}.csv")
-        df.to_json(self.ranking_path / "latest_rankings.json", orient='records')
+        # Save all ranking data to a constant CSV file
+        final_csv = self.ranking_path / "final_rankings.csv"
+        df.to_csv(final_csv, index=False)
         
-        # Generate interactive HTML report
+        # Create a log file with timestamp and ranking summary
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        log_file = self.ranking_path / f"ranking_log_{timestamp}.txt"
+        with open(log_file, "w") as f:
+            f.write("Ranking Log\n")
+            f.write("Timestamp: " + timestamp + "\n")
+            f.write("Number of tickers ranked: " + str(len(df)) + "\n\n")
+            f.write("Top 5 Tickers:\n")
+            f.write(df.head(5).to_string(index=False))
+        
+        # Optionally, you may remove or comment out the previous multi-format outputs if not needed
+        df.to_json(self.ranking_path / "latest_rankings.json", orient='records')
         self._generate_html_report(df.head(100))
 
     def _generate_html_report(self, df: pd.DataFrame):
