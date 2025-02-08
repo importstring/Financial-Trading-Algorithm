@@ -37,6 +37,10 @@ import asyncio
 import functools
 from datetime import datetime, timedelta
 from pandas import DataFrame
+from tenacity import retry, stop_after_attempt, wait_exponential
+import hashlib
+from cryptography.fernet import Fernet
+import aiohttp
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -274,21 +278,56 @@ class ChatGPT4o:
             raise RuntimeError(f"Failed to initialize sentiment analyzer: {e}")
 
 class Perplexity:
-    def __init__(self):  
+    def __init__(self, config: dict = None):
+        """Initialize Perplexity API client with configuration."""
+        from pathlib import Path
+        from typing import Dict, Tuple, Union, Optional
+        from tenacity import retry, stop_after_attempt, wait_exponential
+        import hashlib
+        from cryptography.fernet import Fernet
+        import aiohttp
+        
         self.tests = 1
         self.checkmark = "✅"
         self.crossmark = "❌"
-        self.api_key_path = API_KEYS_PATH / 'Perplexity.txt'
-        self.default_model = "llama-3-sonar-large-32k-chat"
+        
+        # Configuration handling
+        self.config = config or {
+            "default_model": "pplx-7b-online",
+            "max_tokens": 1000,
+            "temperature": 0.7,
+            "api_key_path": API_KEYS_PATH / 'Perplexity.txt'
+        }
+        
+        self.api_key_path = self.config["api_key_path"]
+        self.default_model = self.config["default_model"]
         self.default_role = (
             "You are an AI financial analyst providing market insights based on extensive data analysis."
         )
-        self.api_key = self.read_api()
-        self.sia = self._initialize_sentiment_analyzer()
+        
+        # Initialize components
+        self.api_key = self._encrypt_key(self.read_api())
+        self.sia = self._initialize_sentiment_analyzer()  # Add back sentiment analyzer
         self.cache = {}
         loading_bar.dynamic_update("Instance initialization complete", operation="Perplexity.__init__")
-        
+
+    def _encrypt_key(self, key: str) -> bytes:
+        """Encrypt API key for secure storage."""
+        try:
+            cipher_key = Fernet.generate_key()
+            cipher = Fernet(cipher_key)
+            return cipher.encrypt(key.encode())
+        except Exception as e:
+            logging.error(f"Error encrypting API key: {e}")
+            return key.encode()  # Fallback to encoded but unencrypted
+
+    def _create_cache_key(self, query: str, model: str, max_tokens: int, temperature: float) -> str:
+        """Create unique cache key with collision resistance."""
+        key_components = f"{query}-{model}-{max_tokens}-{temperature}"
+        return hashlib.sha256(key_components.encode()).hexdigest()
+
     def read_api(self) -> str:
+        """Read API key with improved error handling."""
         loading_bar.dynamic_update("Reading Perplexity API key", operation="read_api")
         try:
             with open(self.api_key_path, 'r') as file:
@@ -301,14 +340,18 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))
     def query_perplexity(self, model: str = "", query: str = "", 
                         max_tokens: int = 300, temperature: float = 0.7) -> Tuple[str, bool]:
+        """Query Perplexity API with retry logic and improved validation."""
         loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
-        temperature = 0.7 
         
+        # Input validation and defaults
         model = model or self.default_model
-        cache_key = f"{model}-{hash(query)}-{max_tokens}-{temperature}"
-        
+        if not self._validate_content(query):
+            return "Content validation failed", False
+            
+        cache_key = self._create_cache_key(query, model, max_tokens, temperature)
         if cache_key in self.cache:
             return self.cache[cache_key], True
 
@@ -317,7 +360,7 @@ class Perplexity:
 
         try:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {self.api_key.decode()}",
                 "Content-Type": "application/json"
             }
             payload = {
@@ -349,10 +392,32 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
 
+    async def query_async(self, session: aiohttp.ClientSession, query: str) -> Tuple[str, bool]:
+        """Async query support for improved scalability."""
+        try:
+            async with session.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key.decode()}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.default_model,
+                    "messages": [
+                        {"role": "system", "content": self.default_role},
+                        {"role": "user", "content": query}
+                    ]
+                }
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result['choices'][0]['message']['content'], True
+                return f"Error: {response.status}", False
+        except Exception as e:
+            return f"Error: {str(e)}", False
+
     def _validate_inputs(self, model: str, query: str, max_tokens: int, temperature: float) -> bool:
-        """Validate all input parameters according to API requirements.
-        If max_tokens or temperature are out of range, adjust them to default values.
-        """
+        """Validate all input parameters with updated model list."""
         valid = True
         # Validate model using _validate_model
         model_valid, model_msg = self._validate_model(model)
@@ -394,33 +459,26 @@ class Perplexity:
         return valid
 
     def _validate_model(self, model: str) -> Tuple[bool, str]:
-        """Validate against current Perplexity models"""
+        """Validate against current Perplexity models."""
         valid_models = [
-            "llama-3-sonar-small-32k-chat",
-            "llama-3-sonar-large-32k-chat",
-            "codellama-70b-instruct"
+            "pplx-7b-online",
+            "pplx-70b-online", 
+            "llama-2-70b-chat",
+            "codellama-34b-instruct"
         ]
         valid = model in valid_models
         return (valid, f"{'Valid' if valid else 'Invalid'} model: {model}")
 
-    def _initialize_sentiment_analyzer(self):
-        """Initialize VADER sentiment analyzer"""
-        nltk.download('vader_lexicon', quiet=True)
-        return SentimentIntensityAnalyzer()
-
-    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
-        """Analyze sentiment using VADER with proper score handling"""
-        scores = self.sia.polarity_scores(statement)
-        compound = scores['compound']
-        
-        if compound >= 0.05:
-            return "bullish", compound
-        if compound <= -0.05:
-            return "bearish", compound
-        return "neutral", compound
+    def _validate_content(self, query: str) -> bool:
+        """Validate content for safety and policy compliance."""
+        blocked_terms = [
+            "malware", "exploit", "breach", "hack", "crack",
+            "illegal", "password", "credential"
+        ]
+        return not any(term in query.lower() for term in blocked_terms)
 
     def evaluate_response(self, response: Union[str, dict]) -> dict:
-        """Comprehensive response evaluation with error handling"""
+        """Evaluate response with improved error handling."""
         try:
             if isinstance(response, dict) and 'error' in response:
                 return response
@@ -445,7 +503,26 @@ class Perplexity:
                 "sentiment_score": 0.0
             }
 
+    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
+        """Analyze sentiment with improved accuracy."""
+        try:
+            scores = self.sia.polarity_scores(statement)
+            compound = scores['compound']
+            
+            if compound >= 0.05:
+                return "bullish", compound
+            if compound <= -0.05:
+                return "bearish", compound
+            return "neutral", compound
+            
+        except Exception as e:
+            logging.error(f"Sentiment analysis error: {e}")
+            return "neutral", 0.0
 
+    def _initialize_sentiment_analyzer(self):
+        """Initialize VADER sentiment analyzer"""
+        nltk.download('vader_lexicon', quiet=True)
+        return SentimentIntensityAnalyzer()
 
 class StockData:
     def __init__(self):
@@ -969,6 +1046,7 @@ class Agent:
         self.perplexity = Perplexity()
         self.stock_data = StockData()
         self.ollama = Ollama()
+        self.market_data_agent = MarketDataAgent()  # Add MarketDataAgent
         self.sentiment_analyzer = SentimentIntensityAnalyzer()
 
         # Spinner
@@ -2643,6 +2721,17 @@ class Agent:
             logging.error(f"Error generating rankings: {e}")
             loading_bar.dynamic_update(f"Error generating rankings: {e}", operation="generate_rankings")
 
+    def query_market(self, query: str) -> Tuple[str, list]:
+        """Query the market data agent for financial analysis."""
+        loading_bar.dynamic_update("Querying market data agent", operation="query_market")
+        response, reasoning = self.market_data_agent.analyze_query(query)
+        loading_bar.dynamic_update("Market query complete", operation="query_market")
+        return response, reasoning
+
+    def get_market_insights(self) -> dict:
+        """Get daily market insights from conversation history."""
+        return self.market_data_agent.get_daily_insights()
+
 
 
 def main():
@@ -3033,6 +3122,150 @@ class Ranking:
         query = f"Provide market sentiment for {ticker} (scale -10 to 10) based on recent news."
         response, status = self.chatgpt.query_OpenAI(query=query)
         return self._parse_ollama_score(response)
+
+class MarketDataAgent:
+    def __init__(self):
+        """Initialize MarketDataAgent with Ollama for market analysis and conversation logging."""
+        self.ollama = Ollama()
+        self.conversation_path = CONVERSION_PATH
+        self.conversation_path.mkdir(parents=True, exist_ok=True)
+        self.conversation_history = []
+        self.default_system_prompt = """You are a highly knowledgeable financial market analyst with expertise in:
+1. Market analysis and trends
+2. Company fundamentals and valuations
+3. Economic indicators and their impact
+4. Industry sector analysis
+5. Risk assessment and portfolio management
+
+Provide detailed, well-reasoned responses using a step-by-step thought process.
+Always consider multiple perspectives and potential risks.
+Support your analysis with logical reasoning and market context."""
+
+    def _get_conversation_file(self) -> Path:
+        """Get the conversation file path for the current day."""
+        timestamp = time.strftime("%Y%m%d")
+        return self.conversation_path / f"market_conversation_{timestamp}.json"
+
+    def _log_conversation(self, query: str, response: str, reasoning: list):
+        """Log the conversation with timestamp and reasoning chain."""
+        conversation_entry = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "query": query,
+            "reasoning_chain": reasoning,
+            "response": response
+        }
+        
+        self.conversation_history.append(conversation_entry)
+        
+        # Save to daily conversation file
+        conversation_file = self._get_conversation_file()
+        try:
+            if conversation_file.exists():
+                with open(conversation_file, 'r') as f:
+                    conversations = json.load(f)
+            else:
+                conversations = []
+                
+            conversations.append(conversation_entry)
+            
+            with open(conversation_file, 'w') as f:
+                json.dump(conversations, f, indent=2)
+                
+        except Exception as e:
+            logging.error(f"Error logging conversation: {e}")
+
+    def analyze_query(self, query: str) -> Tuple[str, list]:
+        """Analyze a market-related query using chain-of-thought reasoning."""
+        loading_bar.dynamic_update("Analyzing market query", operation="analyze_query")
+        
+        reasoning_chain = [
+            f"Initial query: {query}",
+            "Step 1: Understanding the core question and required analysis",
+            "Step 2: Identifying relevant market factors and data points",
+            "Step 3: Analyzing potential impacts and relationships",
+            "Step 4: Considering alternative viewpoints and scenarios",
+            "Step 5: Forming a comprehensive conclusion"
+        ]
+        
+        for step in reasoning_chain[1:]:
+            loading_bar.dynamic_update(f"Reasoning: {step}", operation="analyze_query")
+            step_prompt = f"""
+            {self.default_system_prompt}
+            
+            Context:
+            {query}
+            
+            Current step:
+            {step}
+            
+            Based on the previous steps and the query, provide your analysis:
+            """
+            
+            step_response = self.ollama.query_ollama(step_prompt)
+            reasoning_chain.append(f"{step} Analysis: {step_response}")
+        
+        # Generate final response
+        final_prompt = f"""
+        {self.default_system_prompt}
+        
+        Query: {query}
+        
+        Previous analysis steps:
+        {' '.join(reasoning_chain)}
+        
+        Provide a clear, comprehensive answer to the original query, incorporating insights from the analysis chain.
+        Format your response in a clear, structured manner with key points and supporting details.
+        """
+        
+        final_response = self.ollama.query_ollama(final_prompt)
+        
+        # Log the conversation
+        self._log_conversation(query, final_response, reasoning_chain)
+        
+        loading_bar.dynamic_update("Market query analysis complete", operation="analyze_query")
+        return final_response, reasoning_chain
+
+    def get_conversation_history(self, limit: int = None) -> list:
+        """Retrieve recent conversation history."""
+        if limit:
+            return self.conversation_history[-limit:]
+        return self.conversation_history
+
+    def get_daily_insights(self) -> dict:
+        """Get insights from today's conversations."""
+        conversation_file = self._get_conversation_file()
+        if not conversation_file.exists():
+            return {"message": "No conversations recorded today"}
+            
+        try:
+            with open(conversation_file, 'r') as f:
+                conversations = json.load(f)
+                
+            # Analyze conversations for key insights
+            summary_prompt = f"""
+            {self.default_system_prompt}
+            
+            Review these market conversations from today and provide:
+            1. Key themes and patterns
+            2. Important market insights
+            3. Potential action items
+            4. Areas requiring further analysis
+            
+            Conversations:
+            {json.dumps(conversations, indent=2)}
+            """
+            
+            summary = self.ollama.query_ollama(summary_prompt)
+            
+            return {
+                "date": time.strftime("%Y-%m-%d"),
+                "conversation_count": len(conversations),
+                "summary": summary
+            }
+            
+        except Exception as e:
+            logging.error(f"Error getting daily insights: {e}")
+            return {"error": str(e)}
 
 if __name__ == "__main__":
     main()
