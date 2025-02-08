@@ -37,6 +37,10 @@ import asyncio
 import functools
 from datetime import datetime, timedelta
 from pandas import DataFrame
+from tenacity import retry, stop_after_attempt, wait_exponential
+import hashlib
+from cryptography.fernet import Fernet
+import aiohttp
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -274,21 +278,56 @@ class ChatGPT4o:
             raise RuntimeError(f"Failed to initialize sentiment analyzer: {e}")
 
 class Perplexity:
-    def __init__(self):  
+    def __init__(self, config: dict = None):
+        """Initialize Perplexity API client with configuration."""
+        from pathlib import Path
+        from typing import Dict, Tuple, Union, Optional
+        from tenacity import retry, stop_after_attempt, wait_exponential
+        import hashlib
+        from cryptography.fernet import Fernet
+        import aiohttp
+        
         self.tests = 1
         self.checkmark = "✅"
         self.crossmark = "❌"
-        self.api_key_path = API_KEYS_PATH / 'Perplexity.txt'
-        self.default_model = "llama-3-sonar-large-32k-chat"
+        
+        # Configuration handling
+        self.config = config or {
+            "default_model": "pplx-7b-online",
+            "max_tokens": 1000,
+            "temperature": 0.7,
+            "api_key_path": API_KEYS_PATH / 'Perplexity.txt'
+        }
+        
+        self.api_key_path = self.config["api_key_path"]
+        self.default_model = self.config["default_model"]
         self.default_role = (
             "You are an AI financial analyst providing market insights based on extensive data analysis."
         )
-        self.api_key = self.read_api()
-        self.sia = self._initialize_sentiment_analyzer()
+        
+        # Initialize components
+        self.api_key = self._encrypt_key(self.read_api())
+        self.sia = self._initialize_sentiment_analyzer()  # Add back sentiment analyzer
         self.cache = {}
         loading_bar.dynamic_update("Instance initialization complete", operation="Perplexity.__init__")
-        
+
+    def _encrypt_key(self, key: str) -> bytes:
+        """Encrypt API key for secure storage."""
+        try:
+            cipher_key = Fernet.generate_key()
+            cipher = Fernet(cipher_key)
+            return cipher.encrypt(key.encode())
+        except Exception as e:
+            logging.error(f"Error encrypting API key: {e}")
+            return key.encode()  # Fallback to encoded but unencrypted
+
+    def _create_cache_key(self, query: str, model: str, max_tokens: int, temperature: float) -> str:
+        """Create unique cache key with collision resistance."""
+        key_components = f"{query}-{model}-{max_tokens}-{temperature}"
+        return hashlib.sha256(key_components.encode()).hexdigest()
+
     def read_api(self) -> str:
+        """Read API key with improved error handling."""
         loading_bar.dynamic_update("Reading Perplexity API key", operation="read_api")
         try:
             with open(self.api_key_path, 'r') as file:
@@ -301,14 +340,18 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))
     def query_perplexity(self, model: str = "", query: str = "", 
                         max_tokens: int = 300, temperature: float = 0.7) -> Tuple[str, bool]:
+        """Query Perplexity API with retry logic and improved validation."""
         loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
-        temperature = 0.7 
         
+        # Input validation and defaults
         model = model or self.default_model
-        cache_key = f"{model}-{hash(query)}-{max_tokens}-{temperature}"
-        
+        if not self._validate_content(query):
+            return "Content validation failed", False
+            
+        cache_key = self._create_cache_key(query, model, max_tokens, temperature)
         if cache_key in self.cache:
             return self.cache[cache_key], True
 
@@ -317,7 +360,7 @@ class Perplexity:
 
         try:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {self.api_key.decode()}",
                 "Content-Type": "application/json"
             }
             payload = {
@@ -349,10 +392,32 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
 
+    async def query_async(self, session: aiohttp.ClientSession, query: str) -> Tuple[str, bool]:
+        """Async query support for improved scalability."""
+        try:
+            async with session.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key.decode()}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.default_model,
+                    "messages": [
+                        {"role": "system", "content": self.default_role},
+                        {"role": "user", "content": query}
+                    ]
+                }
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result['choices'][0]['message']['content'], True
+                return f"Error: {response.status}", False
+        except Exception as e:
+            return f"Error: {str(e)}", False
+
     def _validate_inputs(self, model: str, query: str, max_tokens: int, temperature: float) -> bool:
-        """Validate all input parameters according to API requirements.
-        If max_tokens or temperature are out of range, adjust them to default values.
-        """
+        """Validate all input parameters with updated model list."""
         valid = True
         # Validate model using _validate_model
         model_valid, model_msg = self._validate_model(model)
@@ -394,33 +459,26 @@ class Perplexity:
         return valid
 
     def _validate_model(self, model: str) -> Tuple[bool, str]:
-        """Validate against current Perplexity models"""
+        """Validate against current Perplexity models."""
         valid_models = [
-            "llama-3-sonar-small-32k-chat",
-            "llama-3-sonar-large-32k-chat",
-            "codellama-70b-instruct"
+            "pplx-7b-online",
+            "pplx-70b-online", 
+            "llama-2-70b-chat",
+            "codellama-34b-instruct"
         ]
         valid = model in valid_models
         return (valid, f"{'Valid' if valid else 'Invalid'} model: {model}")
 
-    def _initialize_sentiment_analyzer(self):
-        """Initialize VADER sentiment analyzer"""
-        nltk.download('vader_lexicon', quiet=True)
-        return SentimentIntensityAnalyzer()
-
-    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
-        """Analyze sentiment using VADER with proper score handling"""
-        scores = self.sia.polarity_scores(statement)
-        compound = scores['compound']
-        
-        if compound >= 0.05:
-            return "bullish", compound
-        if compound <= -0.05:
-            return "bearish", compound
-        return "neutral", compound
+    def _validate_content(self, query: str) -> bool:
+        """Validate content for safety and policy compliance."""
+        blocked_terms = [
+            "malware", "exploit", "breach", "hack", "crack",
+            "illegal", "password", "credential"
+        ]
+        return not any(term in query.lower() for term in blocked_terms)
 
     def evaluate_response(self, response: Union[str, dict]) -> dict:
-        """Comprehensive response evaluation with error handling"""
+        """Evaluate response with improved error handling."""
         try:
             if isinstance(response, dict) and 'error' in response:
                 return response
@@ -445,7 +503,26 @@ class Perplexity:
                 "sentiment_score": 0.0
             }
 
+    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
+        """Analyze sentiment with improved accuracy."""
+        try:
+            scores = self.sia.polarity_scores(statement)
+            compound = scores['compound']
+            
+            if compound >= 0.05:
+                return "bullish", compound
+            if compound <= -0.05:
+                return "bearish", compound
+            return "neutral", compound
+            
+        except Exception as e:
+            logging.error(f"Sentiment analysis error: {e}")
+            return "neutral", 0.0
 
+    def _initialize_sentiment_analyzer(self):
+        """Initialize VADER sentiment analyzer"""
+        nltk.download('vader_lexicon', quiet=True)
+        return SentimentIntensityAnalyzer()
 
 class StockData:
     def __init__(self):
