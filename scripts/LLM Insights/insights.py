@@ -33,6 +33,10 @@ from rich.table import Table
 from loading import DynamicLoadingBar
 import json
 from openai import OpenAI
+import asyncio
+import functools
+from datetime import datetime, timedelta
+from pandas import DataFrame
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -1426,9 +1430,8 @@ class Agent:
         try:
             phases[self.phase]()
             loading_bar.dynamic_update("Phase run complete", operation="run_phase")
-            rank = Ranking()
             rank = Ranking(self.stock_data, self, self.perplexity, self.chatgpt) # TODO: Fix this
-            return
+            return rank.rank_tickers()
         except KeyError:
             logging.error(f"Invalid phase: {self.phase}")
             return 
@@ -2406,17 +2409,30 @@ class Agent:
         loading_bar.dynamic_update("Report generated", operation="get_performance_report")
         return report
     
+    def _augment_prompt_with_stock_data(self, prompt: str) -> str:
+        """Augment the prompt with stock data for any mentioned tickers."""
+        additional_context = ""
+        # Iterate over all known tickers
+        for ticker in self.tickers:
+            if ticker in prompt:
+                stock_df = self.stock_data.get_stock_data([ticker]).get(ticker)
+                if stock_df is not None and not stock_df.empty:
+                    # Get the most recent date and its data
+                    last_date = stock_df.index[-1]
+                    last_row = stock_df.iloc[-1]
+                    additional_context += (f"\nTicker: {ticker} | Date: {last_date} | Close: {last_row['Close']} | Volume: {last_row['Volume']}")
+        if additional_context:
+            prompt += "\n\nAdditional Stock Data:" + additional_context
+        return prompt
+
     def reason(self, query=None):
         loading_bar.dynamic_update("Starting reasoning process", operation="reason")
-        
-        # Add phase to history before querying
-        phase_idx = self.action_history.start_phase("Reasoning", query or self.action_inputs)
-        
-        response = self.ollama.query_ollama(query or self.action_inputs)
-        
-        # Add response to history
+        prompt = query or self.action_inputs
+        # Augment the prompt with stock data if any ticker is mentioned
+        augmented_prompt = self._augment_prompt_with_stock_data(prompt)
+        phase_idx = self.action_history.start_phase("Reasoning", augmented_prompt)
+        response = self.ollama.query_ollama(augmented_prompt)
         self.action_history.add_output(response, phase_idx)
-        
         loading_bar.dynamic_update("Reasoning process complete", operation="reason")
         return response
     
@@ -2882,11 +2898,8 @@ class Ranking:
         return self._parse_ollama_score(response)
 
     def rank_tickers(self, tickers=None):
-        # Use provided tickers if given; otherwise, use validated tickers
-        if tickers is None:
-            tickers = self._validate_tickers()
-        else:
-            tickers = [t for t in tickers if t in self.stock_data.tickers]
+        
+        tickers = list(self.stock_data.tickers)
 
         if not tickers:
             print("No valid tickers found. Saving empty ranking list.")
