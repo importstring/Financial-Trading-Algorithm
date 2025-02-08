@@ -300,6 +300,7 @@ class Perplexity:
     def query_perplexity(self, model: str = "", query: str = "", 
                         max_tokens: int = 300, temperature: float = 0.7) -> Tuple[str, bool]:
         loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
+        temperature = 0.7 
         
         model = model or self.default_model
         cache_key = f"{model}-{hash(query)}-{max_tokens}-{temperature}"
@@ -344,22 +345,49 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
 
-    def _validate_inputs(self, model: str, query: str, 
-                        max_tokens: int, temperature: float) -> bool:
-        """Validate all input parameters according to API requirements"""
-        tests = [
-            self._validate_model(model),
-            (bool(query.strip()), "Valid query" if query.strip() else "Empty query"),
-            (10 <= max_tokens <= 4096, f"Max tokens {max_tokens} out of range"),
-            (0.0 <= temperature <= 1.0, f"Temperature {temperature} out of range")
-        ]
-
-        for test in tests:
-            status = "PASS" if test[0] else "FAIL"
-            print(f"Validation {self.tests}: {status} - {test[1]}")
+    def _validate_inputs(self, model: str, query: str, max_tokens: int, temperature: float) -> bool:
+        """Validate all input parameters according to API requirements.
+        If max_tokens or temperature are out of range, adjust them to default values.
+        """
+        valid = True
+        # Validate model using _validate_model
+        model_valid, model_msg = self._validate_model(model)
+        if not model_valid:
+            print(f"Validation {self.tests}: FAIL - {model_msg}")
+            self.tests += 1
+            valid = False
+        else:
+            print(f"Validation {self.tests}: PASS - {model_msg}")
             self.tests += 1
 
-        return all(test[0] for test in tests)
+        # Validate query
+        if bool(query.strip()):
+            print(f"Validation {self.tests}: PASS - Valid query")
+            self.tests += 1
+        else:
+            print(f"Validation {self.tests}: FAIL - Empty query")
+            self.tests += 1
+            valid = False
+
+        # Check and adjust max_tokens if out of range
+        if not (10 <= max_tokens <= 1000000):
+            print(f"Validation {self.tests}: FAIL - Max tokens {max_tokens} out of range. Setting to default value 300.")
+            max_tokens = 300
+            self.tests += 1
+        else:
+            print(f"Validation {self.tests}: PASS - Max tokens {max_tokens}")
+            self.tests += 1
+
+        # Check and adjust temperature if out of range
+        if not (0.0 <= temperature <= 1.0):
+            print(f"Validation {self.tests}: FAIL - Temperature {temperature} out of range. Setting to default value 0.7.")
+            temperature = 0.7
+            self.tests += 1
+        else:
+            print(f"Validation {self.tests}: PASS - Temperature {temperature}")
+            self.tests += 1
+
+        return valid
 
     def _validate_model(self, model: str) -> Tuple[bool, str]:
         """Validate against current Perplexity models"""
@@ -2606,6 +2634,18 @@ def main():
 
     agent = Agent()
     agent.begin()
+    
+    # Begin ticker ranking process with improved logging
+    logging.info("Starting ticker ranking process")
+    rankings = agent.generate_rankings()
+
+    if rankings:
+        logging.info(f"Ticker ranking process completed successfully. Found {len(rankings)} ranked tickers.")
+        print("\nTop ranked tickers (by composite score):")
+        for entry in rankings[:10]:
+            print(f"{entry['ticker']}: {entry['composite']} (Analysis Time: {entry['analysis_time']})")
+    else:
+        logging.warning("No ranked tickers generated.")
 
 
 
@@ -2818,7 +2858,7 @@ class Ranking:
         
         Output format: Score:-10 to 10|Rationale:<text>"""
         
-        response = self.ollama.query(prompt)
+        response = self.ollama.query_ollama(prompt)
         return self._parse_ollama_score(response)
 
     def _perplexity_sentiment(self, ticker: str) -> float:
@@ -2924,6 +2964,62 @@ class Ranking:
         
         with open(self.ranking_path / "rankings.html", "w") as f:
             f.write("\n".join(report))
+
+    def _calculate_rsi(self, data) -> float:
+        """Calculate the Relative Strength Index (RSI) for the given data."""
+        delta = data['Close'].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1]
+
+    def _calculate_macd(self, data) -> float:
+        """Calculate the MACD for the given data."""
+        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        return macd.iloc[-1]
+
+    def _technical_score(self, data) -> float:
+        """Compute a simple technical score based on RSI and MACD."""
+        rsi = self._calculate_rsi(data)
+        macd = self._calculate_macd(data)
+        score = (rsi - 50) / 10 + macd / 5
+        return score
+
+    def _technical_confidence(self, data) -> float:
+        """Return a technical confidence score; 1.0 if sufficient data, else lower."""
+        if len(data) >= 30:
+            return 1.0
+        else:
+            return 0.5
+
+    def _chatgpt_fundamental(self, ticker: str) -> float:
+        """Analyze fundamental metrics using ChatGPT and return a score between -10 and 10."""
+        query = f"Provide a fundamental analysis score for {ticker} (scale -10 to 10) based on financial metrics and growth potential."
+        response, status = self.chatgpt.query_OpenAI(query=query)
+        return self._parse_ollama_score(response)
+
+    def _ollama_fundamental(self, ticker: str) -> float:
+        """Analyze fundamentals using Ollama and return a score between -10 and 10."""
+        query = f"Provide a fundamental analysis for {ticker} in terms of financial health, growth potential, and competitive advantage. Give a score between -10 and 10."
+        response = self.ollama.query_ollama(query)
+        return self._parse_ollama_score(response)
+
+    def _ollama_sentiment(self, ticker: str) -> float:
+        """Analyze market sentiment using Ollama and return a score between -10 (bearish) and 10 (bullish)."""
+        query = f"Analyze the market sentiment for {ticker} using news and social media. Score from -10 (bearish) to 10 (bullish)."
+        response = self.ollama.query_ollama(query)
+        return self._parse_ollama_score(response)
+
+    def _chatgpt_sentiment(self, ticker: str) -> float:
+        """Analyze market sentiment using ChatGPT and return a score between -10 and 10."""
+        query = f"Provide market sentiment for {ticker} (scale -10 to 10) based on recent news."
+        response, status = self.chatgpt.query_OpenAI(query=query)
+        return self._parse_ollama_score(response)
 
 if __name__ == "__main__":
     main()
