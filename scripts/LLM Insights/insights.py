@@ -6,7 +6,7 @@ import time
 import logging
 import math
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Union
+from typing import Optional, Dict, Tuple, Union, List, Any
 
 # Added missing imports (preserving existing ones)
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,6 +37,10 @@ import asyncio
 import functools
 from datetime import datetime, timedelta
 from pandas import DataFrame
+from tenacity import retry, stop_after_attempt, wait_exponential
+import hashlib
+from cryptography.fernet import Fernet
+import aiohttp
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -274,21 +278,56 @@ class ChatGPT4o:
             raise RuntimeError(f"Failed to initialize sentiment analyzer: {e}")
 
 class Perplexity:
-    def __init__(self):  
+    def __init__(self, config: dict = None):
+        """Initialize Perplexity API client with configuration."""
+        from pathlib import Path
+        from typing import Dict, Tuple, Union, Optional
+        from tenacity import retry, stop_after_attempt, wait_exponential
+        import hashlib
+        from cryptography.fernet import Fernet
+        import aiohttp
+        
         self.tests = 1
         self.checkmark = "✅"
         self.crossmark = "❌"
-        self.api_key_path = API_KEYS_PATH / 'Perplexity.txt'
-        self.default_model = "llama-3-sonar-large-32k-chat"
+        
+        # Configuration handling
+        self.config = config or {
+            "default_model": "pplx-7b-online",
+            "max_tokens": 1000,
+            "temperature": 0.7,
+            "api_key_path": API_KEYS_PATH / 'Perplexity.txt'
+        }
+        
+        self.api_key_path = self.config["api_key_path"]
+        self.default_model = self.config["default_model"]
         self.default_role = (
             "You are an AI financial analyst providing market insights based on extensive data analysis."
         )
-        self.api_key = self.read_api()
-        self.sia = self._initialize_sentiment_analyzer()
+        
+        # Initialize components
+        self.api_key = self._encrypt_key(self.read_api())
+        self.sia = self._initialize_sentiment_analyzer()  # Add back sentiment analyzer
         self.cache = {}
         loading_bar.dynamic_update("Instance initialization complete", operation="Perplexity.__init__")
-        
+
+    def _encrypt_key(self, key: str) -> bytes:
+        """Encrypt API key for secure storage."""
+        try:
+            cipher_key = Fernet.generate_key()
+            cipher = Fernet(cipher_key)
+            return cipher.encrypt(key.encode())
+        except Exception as e:
+            logging.error(f"Error encrypting API key: {e}")
+            return key.encode()  # Fallback to encoded but unencrypted
+
+    def _create_cache_key(self, query: str, model: str, max_tokens: int, temperature: float) -> str:
+        """Create unique cache key with collision resistance."""
+        key_components = f"{query}-{model}-{max_tokens}-{temperature}"
+        return hashlib.sha256(key_components.encode()).hexdigest()
+
     def read_api(self) -> str:
+        """Read API key with improved error handling."""
         loading_bar.dynamic_update("Reading Perplexity API key", operation="read_api")
         try:
             with open(self.api_key_path, 'r') as file:
@@ -301,14 +340,18 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))
     def query_perplexity(self, model: str = "", query: str = "", 
                         max_tokens: int = 300, temperature: float = 0.7) -> Tuple[str, bool]:
+        """Query Perplexity API with retry logic and improved validation."""
         loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
-        temperature = 0.7 
         
+        # Input validation and defaults
         model = model or self.default_model
-        cache_key = f"{model}-{hash(query)}-{max_tokens}-{temperature}"
-        
+        if not self._validate_content(query):
+            return "Content validation failed", False
+            
+        cache_key = self._create_cache_key(query, model, max_tokens, temperature)
         if cache_key in self.cache:
             return self.cache[cache_key], True
 
@@ -317,7 +360,7 @@ class Perplexity:
 
         try:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {self.api_key.decode()}",
                 "Content-Type": "application/json"
             }
             payload = {
@@ -349,10 +392,32 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
 
+    async def query_async(self, session: aiohttp.ClientSession, query: str) -> Tuple[str, bool]:
+        """Async query support for improved scalability."""
+        try:
+            async with session.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key.decode()}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.default_model,
+                    "messages": [
+                        {"role": "system", "content": self.default_role},
+                        {"role": "user", "content": query}
+                    ]
+                }
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result['choices'][0]['message']['content'], True
+                return f"Error: {response.status}", False
+        except Exception as e:
+            return f"Error: {str(e)}", False
+
     def _validate_inputs(self, model: str, query: str, max_tokens: int, temperature: float) -> bool:
-        """Validate all input parameters according to API requirements.
-        If max_tokens or temperature are out of range, adjust them to default values.
-        """
+        """Validate all input parameters with updated model list."""
         valid = True
         # Validate model using _validate_model
         model_valid, model_msg = self._validate_model(model)
@@ -394,33 +459,26 @@ class Perplexity:
         return valid
 
     def _validate_model(self, model: str) -> Tuple[bool, str]:
-        """Validate against current Perplexity models"""
+        """Validate against current Perplexity models."""
         valid_models = [
-            "llama-3-sonar-small-32k-chat",
-            "llama-3-sonar-large-32k-chat",
-            "codellama-70b-instruct"
+            "pplx-7b-online",
+            "pplx-70b-online", 
+            "llama-2-70b-chat",
+            "codellama-34b-instruct"
         ]
         valid = model in valid_models
         return (valid, f"{'Valid' if valid else 'Invalid'} model: {model}")
 
-    def _initialize_sentiment_analyzer(self):
-        """Initialize VADER sentiment analyzer"""
-        nltk.download('vader_lexicon', quiet=True)
-        return SentimentIntensityAnalyzer()
-
-    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
-        """Analyze sentiment using VADER with proper score handling"""
-        scores = self.sia.polarity_scores(statement)
-        compound = scores['compound']
-        
-        if compound >= 0.05:
-            return "bullish", compound
-        if compound <= -0.05:
-            return "bearish", compound
-        return "neutral", compound
+    def _validate_content(self, query: str) -> bool:
+        """Validate content for safety and policy compliance."""
+        blocked_terms = [
+            "malware", "exploit", "breach", "hack", "crack",
+            "illegal", "password", "credential"
+        ]
+        return not any(term in query.lower() for term in blocked_terms)
 
     def evaluate_response(self, response: Union[str, dict]) -> dict:
-        """Comprehensive response evaluation with error handling"""
+        """Evaluate response with improved error handling."""
         try:
             if isinstance(response, dict) and 'error' in response:
                 return response
@@ -445,7 +503,26 @@ class Perplexity:
                 "sentiment_score": 0.0
             }
 
+    def analyze_sentiment(self, statement: str) -> Tuple[str, float]:
+        """Analyze sentiment with improved accuracy."""
+        try:
+            scores = self.sia.polarity_scores(statement)
+            compound = scores['compound']
+            
+            if compound >= 0.05:
+                return "bullish", compound
+            if compound <= -0.05:
+                return "bearish", compound
+            return "neutral", compound
+            
+        except Exception as e:
+            logging.error(f"Sentiment analysis error: {e}")
+            return "neutral", 0.0
 
+    def _initialize_sentiment_analyzer(self):
+        """Initialize VADER sentiment analyzer"""
+        nltk.download('vader_lexicon', quiet=True)
+        return SentimentIntensityAnalyzer()
 
 class StockData:
     def __init__(self):
@@ -969,6 +1046,7 @@ class Agent:
         self.perplexity = Perplexity()
         self.stock_data = StockData()
         self.ollama = Ollama()
+        self.market_data_agent = MarketDataAgent()  # Add MarketDataAgent
         self.sentiment_analyzer = SentimentIntensityAnalyzer()
 
         # Spinner
@@ -2643,6 +2721,17 @@ class Agent:
             logging.error(f"Error generating rankings: {e}")
             loading_bar.dynamic_update(f"Error generating rankings: {e}", operation="generate_rankings")
 
+    def query_market(self, query: str) -> Tuple[str, list]:
+        """Query the market data agent for financial analysis."""
+        loading_bar.dynamic_update("Querying market data agent", operation="query_market")
+        response, reasoning = self.market_data_agent.analyze_query(query)
+        loading_bar.dynamic_update("Market query complete", operation="query_market")
+        return response, reasoning
+
+    def get_market_insights(self) -> dict:
+        """Get daily market insights from conversation history."""
+        return self.market_data_agent.get_daily_insights()
+
 
 
 def main():
@@ -3033,6 +3122,233 @@ class Ranking:
         query = f"Provide market sentiment for {ticker} (scale -10 to 10) based on recent news."
         response, status = self.chatgpt.query_OpenAI(query=query)
         return self._parse_ollama_score(response)
+
+class MarketDataAgent:
+    def __init__(self):
+        self.stock_data = StockData()
+        self.ollama = Ollama()
+        self.perplexity = Perplexity()
+        self.chatgpt = ChatGPT4o()
+        self.conversation_path = CONVERSION_PATH
+        self.conversation_path.mkdir(parents=True, exist_ok=True)
+        
+    def _get_conversation_file(self) -> Path:
+        """Get the conversation file path for today."""
+        today = datetime.now().strftime("%Y%m%d")
+        return self.conversation_path / f"market_conversation_{today}.json"
+    
+    def _log_conversation(self, query: str, reasoning_chain: List[str], response: str):
+        """Log a conversation with timestamp."""
+        file_path = self._get_conversation_file()
+        timestamp = datetime.now().isoformat()
+        
+        try:
+            if file_path.exists():
+                conversations = json.loads(file_path.read_text())
+            else:
+                conversations = []
+                
+            conversations.append({
+                "timestamp": timestamp,
+                "query": query,
+                "reasoning_chain": reasoning_chain,
+                "response": response
+            })
+            
+            file_path.write_text(json.dumps(conversations, indent=2))
+        except Exception as e:
+            logging.error(f"Error logging conversation: {e}")
+
+    def _calculate_technical_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Calculate technical indicators for analysis."""
+        try:
+            # Calculate SMAs
+            data['SMA_20'] = data['Close'].rolling(window=20).mean()
+            data['SMA_50'] = data['Close'].rolling(window=50).mean()
+            
+            # Calculate RSI
+            delta = data['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            data['RSI'] = 100 - (100 / (1 + rs))
+            
+            # Calculate MACD
+            exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+            data['MACD'] = exp1 - exp2
+            data['Signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
+            
+            return data.fillna(method='ffill').fillna(method='bfill')
+        except Exception as e:
+            logging.error(f"Error calculating indicators: {e}")
+            raise
+
+    def _analyze_technicals(self, data: pd.DataFrame) -> Tuple[float, List[str]]:
+        """Analyze technical indicators and return a score and reasoning."""
+        try:
+            data = self._calculate_technical_indicators(data)
+            latest = data.iloc[-1]
+            score = 0
+            reasoning = []
+            
+            # SMA crossover
+            if latest['SMA_20'] > latest['SMA_50']:
+                score += 0.2
+                reasoning.append("Bullish: 20-day SMA above 50-day SMA")
+            else:
+                score -= 0.2
+                reasoning.append("Bearish: 20-day SMA below 50-day SMA")
+            
+            # RSI
+            if 30 < latest['RSI'] < 70:
+                score += 0.1
+                reasoning.append(f"Neutral RSI: {latest['RSI']:.2f}")
+            elif latest['RSI'] <= 30:
+                score += 0.2
+                reasoning.append(f"Oversold RSI: {latest['RSI']:.2f}")
+            else:
+                score -= 0.2
+                reasoning.append(f"Overbought RSI: {latest['RSI']:.2f}")
+            
+            # MACD
+            if latest['MACD'] > latest['Signal']:
+                score += 0.2
+                reasoning.append("Bullish: MACD above signal line")
+            else:
+                score -= 0.2
+                reasoning.append("Bearish: MACD below signal line")
+            
+            return max(0, min(1, score + 0.5)), reasoning
+            
+        except Exception as e:
+            logging.error(f"Error in technical analysis: {e}")
+            return 0.5, ["Error performing technical analysis"]
+
+    async def analyze_query(self, query: str) -> Dict[str, Any]:
+        """Analyze a market-related query using chain-of-thought reasoning."""
+        loading_bar.dynamic_update("Starting market analysis", operation="analyze_query")
+        
+        try:
+            # Extract tickers from query
+            tickers = self._extract_tickers(query)
+            
+            # Get market data
+            market_data = {ticker: self.stock_data.get_stock_data([ticker])[ticker] 
+                         for ticker in tickers}
+            
+            # Technical analysis
+            technical_scores = {}
+            technical_reasoning = {}
+            for ticker, data in market_data.items():
+                score, reasoning = self._analyze_technicals(data)
+                technical_scores[ticker] = score
+                technical_reasoning[ticker] = reasoning
+            
+            # Sentiment analysis
+            sentiment_scores = {}
+            for ticker in tickers:
+                perplexity_response = self.perplexity.query_perplexity(
+                    f"Analyze market sentiment for {ticker}"
+                )
+                sentiment_scores[ticker] = self.perplexity.analyze_sentiment(perplexity_response)[1]
+            
+            # Chain of thought reasoning with Ollama
+            prompt = f"""Analyze the following market query: {query}
+            Technical Analysis: {technical_reasoning}
+            Sentiment Scores: {sentiment_scores}
+            
+            Provide a detailed analysis with:
+            1. Key market factors
+            2. Technical indicators interpretation
+            3. Market sentiment assessment
+            4. Potential risks and opportunities
+            5. Actionable recommendations
+            """
+            
+            reasoning_chain = []
+            response = self.ollama.reason(prompt, reasoning_chain)
+            
+            # Log the conversation
+            self._log_conversation(query, reasoning_chain, response)
+            
+            loading_bar.dynamic_update("Analysis complete", operation="analyze_query")
+            
+            return {
+                "query": query,
+                "tickers": tickers,
+                "technical_analysis": {
+                    "scores": technical_scores,
+                    "reasoning": technical_reasoning
+                },
+                "sentiment_analysis": sentiment_scores,
+                "reasoning_chain": reasoning_chain,
+                "response": response
+            }
+            
+        except Exception as e:
+            logging.error(f"Error analyzing query: {e}")
+            return {"error": str(e)}
+
+    def _extract_tickers(self, query: str) -> List[str]:
+        """Extract stock tickers from a query using regex."""
+        # Basic pattern for stock tickers (can be enhanced)
+        ticker_pattern = r'\b[A-Z]{1,5}\b'
+        return list(set(re.findall(ticker_pattern, query)))
+
+    def get_conversation_history(self, days: int = 1) -> List[Dict[str, Any]]:
+        """Get conversation history for the specified number of days."""
+        history = []
+        today = datetime.now()
+        
+        for i in range(days):
+            date = today - timedelta(days=i)
+            file_path = self.conversation_path / f"market_conversation_{date.strftime('%Y%m%d')}.json"
+            
+            if file_path.exists():
+                try:
+                    conversations = json.loads(file_path.read_text())
+                    history.extend(conversations)
+                except Exception as e:
+                    logging.error(f"Error reading conversation history: {e}")
+        
+        return history
+
+    def get_daily_insights(self) -> Dict[str, Any]:
+        """Get insights from today's conversations."""
+        today_file = self._get_conversation_file()
+        if not today_file.exists():
+            return {"error": "No conversations found for today"}
+            
+        try:
+            conversations = json.loads(today_file.read_text())
+            
+            # Extract key themes and insights
+            all_text = " ".join([
+                f"{conv['query']} {conv['response']}"
+                for conv in conversations
+            ])
+            
+            prompt = f"""Analyze these market conversations and provide:
+            1. Key market themes discussed
+            2. Important market insights
+            3. Potential action items
+            4. Areas needing further analysis
+            
+            Conversations: {all_text}"""
+            
+            reasoning_chain = []
+            insights = self.ollama.reason(prompt, reasoning_chain)
+            
+            return {
+                "conversation_count": len(conversations),
+                "insights": insights,
+                "reasoning_chain": reasoning_chain
+            }
+            
+        except Exception as e:
+            logging.error(f"Error getting daily insights: {e}")
+            return {"error": str(e)}
 
 if __name__ == "__main__":
     main()
