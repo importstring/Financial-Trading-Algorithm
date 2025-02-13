@@ -2557,14 +2557,13 @@ class Agent:
     def begin(self):
         with loading_bar:
             phases = [
+                ("Ranking Analysis", self.generate_rankings),
                 ("Strategic Planning", self.plan_actions),
                 ("Stock Selection", self.pick_tickers),
                 ("Validation", self.test_outputs),
                 ("Research Analysis", self.research_and_insight),
                 ("Trade Execution", self.execute_trades),
-                ("Learning Phase", self.learn),
-                # Add new phase for ranking
-                ("Ranking Analysis", self.generate_rankings)  # Add this line
+                ("Learning Phase", self.learn)
             ]
             
             for phase_name, phase_function in phases:
@@ -2639,12 +2638,37 @@ class Agent:
     def generate_rankings(self):
         loading_bar.dynamic_update("Generating ticker rankings", operation="generate_rankings")
         try:
+            import sys, time
+            # Define a simple progress bar function
+            def simple_progress_bar(total, current, text=""):
+                bar_length = 20
+                progress = float(current) / total
+                block = int(round(bar_length * progress))
+                text_progress = "\r" + text + " [" + "#" * block + "-" * (bar_length - block) + "] " + str(int(progress * 100)) + "% Complete"
+                sys.stdout.write(text_progress)
+                sys.stdout.flush()
+            
+            # Determine total steps based on active tickers or all tickers
+            total_steps = len(self.active_tickers) if self.active_tickers and len(self.active_tickers) > 0 else len(self.stock_data.tickers)
+            print("\nUnique Ranking Progress:")
+            for i in range(total_steps):
+                simple_progress_bar(total_steps, i + 1, "Ranking in progress")
+                time.sleep(0.05)  # simulate progress update
+            print("\nUnique Ranking Progress Complete.")
+            
+            # Continue with ranking generation
             ranking = Ranking(self.stock_data, self, self.perplexity, self.chatgpt)
             if self.active_tickers and len(self.active_tickers) > 0:
                 ranked = ranking.rank_tickers(self.active_tickers)
             else:
                 ranked = ranking.rank_tickers()
+            
+            sorted_rankings = sorted(ranked, key=lambda x: x['composite'], reverse=True)
+            self.save_rankings(sorted_rankings)
             loading_bar.dynamic_update("Rankings generated and saved", operation="generate_rankings")
+            # Store the most recent rankings in an attribute
+            self.latest_rankings = sorted_rankings
+            return sorted_rankings
         except Exception as e:
             logging.error(f"Error generating rankings: {e}")
             loading_bar.dynamic_update(f"Error generating rankings: {e}", operation="generate_rankings")
@@ -2715,6 +2739,13 @@ class Agent:
             }
             
             composite_score = sum(score * weights[metric] for metric, score in scores.items())
+            
+            # If there are recent rankings available, adjust the score by averaging with the ranking composite score
+            if hasattr(self, 'latest_rankings') and self.latest_rankings:
+                ranking_entry = next((r for r in self.latest_rankings if r['ticker'] == ticker), None)
+                if ranking_entry:
+                    ranking_score = ranking_entry.get('composite', 0)
+                    composite_score = (composite_score + ranking_score) / 2
             
             # Generate recommendation
             if composite_score > 0.7:
