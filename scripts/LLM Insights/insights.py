@@ -37,13 +37,15 @@ import asyncio
 import functools
 from datetime import datetime, timedelta
 from pandas import DataFrame
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import hashlib
 from cryptography.fernet import Fernet
 import aiohttp
 from sklearn.ensemble import IsolationForest
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+from perplexity import query_perplexity as send_query_perplexity
+from Chatgpt import query_OpenAI as send_query_openai
 
 # Get project root directory
 def get_project_root() -> Path:
@@ -109,57 +111,12 @@ class ChatGPT4o:
             raise ValueError(f"Unexpected error reading API key: {e}")
 
     def query_OpenAI(self, model="", query="", max_tokens=150, temperature=0.5, role=""):
-        """Query OpenAI API with 2025 features."""
         loading_bar.dynamic_update("Preparing OpenAI query", operation="query_OpenAI")
-
-        # Validate and set model
-        model = self.default_model if not model else model
-        supported_models = {
-            "gpt-4o": {"max_tokens": 128000},  # 128k context window
-            "gpt-4o-realtime-preview": {"max_tokens": 32000},  # For real-time interactions
-            "gpt-4": {"max_tokens": 8000},  # Legacy support
-            "gpt-3.5-turbo": {"max_tokens": 4000},  # Legacy support
-        }
-        
-        if model not in supported_models:
-            raise ValueError(f"Unsupported model: {model}. Available models: {list(supported_models.keys())}")
-            
-        role = self.default_role if not role else role
-
-        def test_input_validity(query_input):
-            """Validate query input."""
-            result = bool(query_input.strip())
-            description = f"{'Valid' if result else 'Invalid'} query provided"
-            print(f"Test {self.tests}: {self.checkmark if result else self.crossmark} {description}")
-            self.tests += 1
-            return result
-
-        if not test_input_validity(query):
-            return "Invalid query provided. Please check the input.", False
-
         try:
-            # Using 2025 OpenAI client pattern
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": role},
-                    {"role": "user", "content": query}
-                ],
-                max_tokens=min(max_tokens, supported_models[model]["max_tokens"]),
-                temperature=temperature
-            )
-            output = response.choices[0].message.content
+            output = send_query_openai(query)
             status = True
-            
-        except openai.BadRequestError as e:
-            output, status = f"Invalid request: {e}", False
-        except openai.AuthenticationError:
-            output, status = "Authentication failed. Check your API key.", False
-        except openai.RateLimitError:
-            output, status = "Rate limit exceeded. Please try again later.", False
         except Exception as e:
-            output, status = f"An unexpected error occurred: {e}", False
-        
+            output, status = f"An error occurred: {e}", False
         loading_bar.dynamic_update("OpenAI query complete", operation="query_OpenAI")
         return output, status
 
@@ -343,57 +300,24 @@ class Perplexity:
         finally:
             loading_bar.dynamic_update("Perplexity API key read", operation="read_api")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))
-    def query_perplexity(self, model: str = "", query: str = "", 
-                        max_tokens: int = 300, temperature: float = 0.7) -> Tuple[str, bool]:
-        """Query Perplexity API with retry logic and improved validation."""
+    def query_perplexity(self, query: str, model: str = "llama-3.1-sonar-large-128k-online", max_tokens: int = 512, temperature: float = 0.7) -> Tuple[str, bool]:
         loading_bar.dynamic_update("Querying Perplexity", operation="query_perplexity")
-        
-        # Input validation and defaults
-        model = model or self.default_model
-        if not self._validate_content(query):
-            return "Content validation failed", False
-            
-        cache_key = self._create_cache_key(query, model, max_tokens, temperature)
-        if cache_key in self.cache:
-            return self.cache[cache_key], True
-
-        if not self._validate_inputs(model, query, max_tokens, temperature):
-            return "Invalid input parameters", False
-
         try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key.decode()}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": self.default_role},
-                    {"role": "user", "content": query}
-                ],
-                "max_tokens": max_tokens,
-                "temperature": temperature
-            }
-            
-            response = requests.post(
-                "https://api.perplexity.ai/chat/completions",
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
-            
-            result = response.json()
-            output = result['choices'][0]['message']['content']
-            self.cache[cache_key] = (output, True)
-            return output, True
-            
-        except requests.exceptions.RequestException as e:
-            error_msg = f"API Error: {str(e)}"
-            logging.error(error_msg)
-            return error_msg, False
+            result = send_query_perplexity(query, model=model, max_tokens=max_tokens, temperature=temperature)
+            return result
+        except Exception as e:
+            error_detail = f"{str(e)} | No response"
+            logging.error(f"Full API Error: {error_detail}")
+            return f"Error: {error_detail}", False
         finally:
-            loading_bar.dynamic_update("Perplexity query complete", operation="query_perplexity")
+            loading_bar.dynamic_update("API request completed", operation="query_perplexity")
+
+    def _validate_perplexity_response(self, response_data: dict) -> None:
+        required_keys = {'choices', 'created', 'id', 'model', 'object'}
+        if not required_keys.issubset(response_data.keys()):
+            raise ValueError(f"Missing keys in response: {response_data.keys()}")
+        if not isinstance(response_data['choices'], list) or len(response_data['choices']) == 0:
+            raise ValueError("Empty choices array in response")
 
     async def query_async(self, session: aiohttp.ClientSession, query: str) -> Tuple[str, bool]:
         """Async query support for improved scalability."""
