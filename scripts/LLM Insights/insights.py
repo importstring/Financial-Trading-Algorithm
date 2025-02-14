@@ -2664,7 +2664,7 @@ class Agent:
                 ranked = ranking.rank_tickers()
             
             sorted_rankings = sorted(ranked, key=lambda x: x['composite'], reverse=True)
-            self.save_rankings(sorted_rankings)
+            ranking.save_rankings(sorted_rankings)
             loading_bar.dynamic_update("Rankings generated and saved", operation="generate_rankings")
             # Store the most recent rankings in an attribute
             self.latest_rankings = sorted_rankings
