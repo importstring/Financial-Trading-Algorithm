@@ -513,20 +513,27 @@ class StockData:
             Optional[bool]: True if update was successful, False if an error occurred, None if update_data() doesn't return a status.
         """
         try:
-
-
             logging.info("Starting data update process")
             result = update_data()
             logging.info("Data update process completed")
             loading_bar.dynamic_update("Maintenance complete", operation="maintain_stock_data")
             return result if isinstance(result, bool) else None
-        
         except ImportError as e:
             logging.error(f"Failed to import update_data: {e}")
             return False
         except Exception as e:
             logging.error(f"An error occurred during data update: {e}")
             return False
+
+    # New method to check if ticker data is updated
+    def is_data_recent(self, ticker: str, tolerance_days: int = 1) -> bool:
+        data = self.get_stock_data([ticker]).get(ticker)
+        if data is None or data.empty:
+            return False
+        # Normalize dates for accurate day difference calculation
+        last_date = data.index.max().normalize()
+        current_date = pd.Timestamp.today().normalize()
+        return (current_date - last_date).days <= tolerance_days
 
 class Ollama:
     def __init__(self):
@@ -996,6 +1003,8 @@ class Agent:
         self.previous_actions = []
         self.current_actions = {}
         self.tickers = self.stock_data.tickers
+        # Filter out tickers that don't have updated data
+        self.tickers = [ticker for ticker in self.tickers if self.stock_data.is_data_recent(ticker)]
         self.decisons = None
         self.environment = None
         self.active_tickers = None
@@ -2621,6 +2630,11 @@ class Agent:
             with open(report_file, 'w') as f:
                 f.write(report_content)
             
+            # Overwrite the dashboard report file with the new report content
+            dashboard_report_path = r"C:\Users\simon\Documents\CS\Web\Finance Dashboard\report.txt"
+            with open(dashboard_report_path, "w") as f:
+                f.write(report_content)
+            
             # Print summary to console
             print("\nComprehensive Report Generated:")
             print(f"Saved to: {report_file}")
@@ -2998,6 +3012,7 @@ class Ranking:
             and len(data) >= 30
             and data.index[-1] >= threshold
             and data['Volume'].mean() > 100000
+            and self.stock_data.is_data_recent(t)  # Only include tickers with updated data
         ]
 
     def _select_llm(self, analysis_type: str) -> str:
@@ -3137,6 +3152,10 @@ class Ranking:
             df = pd.DataFrame(ranked_tickers)
             df.to_csv(self.ranked_file, index=False)
             logging.info(f"Saved rankings to {self.ranked_file}")
+            # Also save to Finance Dashboard location
+            dashboard_path = r"C:\Users\simon\Documents\CS\Web\Finance Dashboard\rankings.csv"
+            df.to_csv(dashboard_path, index=False)
+            logging.info(f"Saved rankings to {dashboard_path}")
         except Exception as e:
             logging.error(f"Error saving rankings: {e}")
 
