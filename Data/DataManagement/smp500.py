@@ -20,12 +20,14 @@ class SavePath:
         self.parquet_handler = None
 
     def initialize_ticker_list(self):
-        self.path = "/Users/simon/Financial-Trading-Algorithm-1/Data/Stock-Data"
+        # Use pathlib for cross-platform compatibility
+        self.path = Path(__file__).parent.parent / "Stock-Data"
         self.name = "S&P 500 Tickers"
         self.parquet_handler = ParquetHandler(self.path)
 
     def initialize_data_path(self):
-        self.path = "/Users/simon/Financial-Trading-Algorithm-1/Data/Stock-Data"
+        # Use pathlib for cross-platform compatibility
+        self.path = Path(__file__).parent.parent / "Stock-Data"
         self.name = "S&P 500 Data"
         self.parquet_handler = ParquetHandler(self.path)
 
@@ -42,13 +44,13 @@ class SavePath:
         Raises:
             TypeError: If data type is not supported
         """
-        os.makedirs(self.path, exist_ok=True)
+        self.path.mkdir(parents=True, exist_ok=True)
         
         if isinstance(data, list):
-            file_path = os.path.join(self.path, f"{self.name}.json")
+            file_path = self.path / f"{self.name}.json"
             with open(file_path, 'w') as f:
                 json.dump(data, f)
-            return file_path
+            return str(file_path)
         
         elif isinstance(data, pd.DataFrame):
             return str(self.parquet_handler.save_dataframe(
@@ -191,17 +193,16 @@ class Smp500Tickers:
         self.logger.info(f"Clearing directory: {directory}")
         
         try:
-            for filename in os.listdir(directory):
-                file_path = os.path.join(directory, filename)
+            for item in directory.iterdir():
                 try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                        self.logger.debug(f"Deleted file: {file_path}")
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-                        self.logger.debug(f"Deleted directory: {file_path}")
+                    if item.is_file() or item.is_symlink():
+                        item.unlink()
+                        self.logger.debug(f"Deleted file: {item}")
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        self.logger.debug(f"Deleted directory: {item}")
                 except Exception as e:
-                    self.logger.error(f"Failed to delete {file_path}: {e}")
+                    self.logger.error(f"Failed to delete {item}: {e}")
                     
             self.logger.info("Successfully cleared stock directory")
             
