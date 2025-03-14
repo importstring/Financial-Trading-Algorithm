@@ -29,6 +29,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.table import Table
 from loading import DynamicLoadingBar
+from Data.DataManagement.parquet_handler import ParquetHandler  # Add this import
 import json
 from openai import OpenAI
 import asyncio
@@ -452,9 +453,9 @@ class Perplexity:
 class StockData:
     def __init__(self):
         self.data_path = STOCK_DATA_PATH
+        self.parquet_handler = ParquetHandler(self.data_path)
         self.maintain_stock_data()
         self.stock_data = self.read_stock_data()  
-
         self.tickers = list(self.stock_data.keys())
             
         loading_bar.dynamic_update("Stock data initialization complete", operation="StockData.__init__")
@@ -463,7 +464,15 @@ class StockData:
         loading_bar.dynamic_update("Fetching stock data", operation="get_stock_data")
         data = {}
         for ticker in tickers:
-            data[ticker] = self.stock_data[ticker]
+            try:
+                data[ticker] = self.stock_data[ticker]
+            except KeyError:
+                # Try to read from parquet if not in memory
+                try:
+                    data[ticker] = self.parquet_handler.read_dataframe(ticker)
+                except Exception as e:
+                    logging.error(f"Error reading data for {ticker}: {e}")
+                    continue
         loading_bar.dynamic_update("Fetched stock data", operation="get_stock_data")
         return data
     
@@ -472,29 +481,38 @@ class StockData:
         """
         Data Path --> self.data_path
         Inside the Data path
-        - Read all the data
+        - Read all the data in Parquet format
         Format:
-        {ticker}.csv
-        Inside the CSV:
-            Date,Open,High,Low,Close,Volume
-            E.g: 2024-11-18,25.75,25.86,25.74,25.81,1209300.0
+        {ticker}.parquet
+        Inside the Parquet file:
+            Date (index),Open,High,Low,Close,Volume
         """
-
         stock_data = {}
         try:
-            # Get all CSV files in the data path using pathlib
-            csv_files = list(self.data_path.glob("*.csv"))
+            # Get all Parquet files in the data path
+            parquet_files = list(self.data_path.glob("*.parquet"))
+            parquet_files.extend(list(self.data_path.glob("*/*.parquet")))  # Include partitioned datasets
             
-            for file_path in csv_files:
-                # Extract ticker from filename
-                ticker = file_path.stem
-                
-                # Read CSV file
-                df = pd.read_csv(file_path, parse_dates=['Date'])
-                df.set_index('Date', inplace=True)
-                
-                # Store in dictionary with ticker as key
-                stock_data[ticker] = df
+            for file_path in parquet_files:
+                try:
+                    # Extract ticker from filename
+                    ticker = file_path.stem
+                    
+                    # Read Parquet file using ParquetHandler
+                    df = self.parquet_handler.read_dataframe(ticker)
+                    
+                    if not df.empty:
+                        # Ensure Date is the index
+                        if 'Date' in df.columns:
+                            df.set_index('Date', inplace=True)
+                        
+                        # Store in dictionary with ticker as key
+                        stock_data[ticker] = df
+                        
+                except Exception as e:
+                    logging.error(f"Error reading {ticker} data: {e}")
+                    continue
+                    
             loading_bar.dynamic_update("Stock data read complete", operation="read_stock_data")
             return stock_data
             

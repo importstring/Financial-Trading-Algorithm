@@ -2,15 +2,22 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
+import time
 import logging
-from typing import Optional, Dict, Any, Union
-import numpy as np
+from typing import Dict, Any, Optional, List
 
 class ParquetHandler:
-    """Handles Parquet file operations with optimized settings and error handling."""
+    """Handles reading and writing Parquet format data with optimizations."""
     
-    def __init__(self, base_path: Union[str, Path]):
+    def __init__(self, base_path: Path):
+        """
+        Initialize ParquetHandler.
+        
+        Args:
+            base_path: Base directory for Parquet files
+        """
         self.base_path = Path(base_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
         self.logger = self._setup_logger()
         
     def _setup_logger(self) -> logging.Logger:
@@ -28,171 +35,169 @@ class ParquetHandler:
         
         return logger
     
-    def optimize_dtypes(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Optimize DataFrame data types for Parquet storage."""
-        for column in df.columns:
-            # Convert integer-like float columns to Int64 (nullable integer)
-            if df[column].dtype == 'float64':
-                if df[column].notnull().all() and df[column].mod(1).eq(0).all():
-                    df[column] = df[column].astype('Int64')
-            
-            # Convert string columns to categorical if cardinality is low
-            elif df[column].dtype == 'object':
-                unique_count = df[column].nunique()
-                if unique_count / len(df) < 0.5:  # If less than 50% unique values
-                    df[column] = df[column].astype('category')
-                    
-        return df
+    def get_parquet_path(self, name: str) -> Path:
+        """Get the full path for a Parquet file."""
+        return self.base_path / f"{name}.parquet"
     
     def save_dataframe(self, 
                       df: pd.DataFrame, 
-                      filename: str,
+                      name: str, 
                       compression: str = 'snappy',
-                      partition_cols: Optional[list] = None) -> Path:
+                      partition_cols: Optional[List[str]] = None,
+                      row_group_size: int = 100000) -> str:
         """
-        Save DataFrame to Parquet format with optimized settings.
+        Save DataFrame to Parquet format with optimizations.
         
         Args:
             df: DataFrame to save
-            filename: Name of the file (without .parquet extension)
-            compression: Compression codec ('snappy', 'gzip', 'brotli', etc.)
-            partition_cols: List of columns to partition by
+            name: Base name for the file
+            compression: Compression algorithm ('snappy', 'gzip', or 'brotli')
+            partition_cols: Columns to partition by
+            row_group_size: Number of rows per row group
             
         Returns:
-            Path: Path where the file was saved
+            str: Path where the data was saved
         """
         try:
-            # Create directory if it doesn't exist
-            self.base_path.mkdir(parents=True, exist_ok=True)
+            start_time = time.time()
+            file_path = self.get_parquet_path(name)
             
-            # Optimize data types
-            df = self.optimize_dtypes(df)
-            
-            # Prepare file path
-            file_path = self.base_path / f"{filename}.parquet"
-            
-            # Convert to PyArrow Table for more control
+            # Convert to PyArrow Table for optimized writing
             table = pa.Table.from_pandas(df)
+            
+            # Set write options
+            write_options = {
+                'compression': compression,
+                'row_group_size': row_group_size,
+                'use_dictionary': True,
+                'write_statistics': True
+            }
             
             if partition_cols:
                 pq.write_to_dataset(
                     table,
-                    root_path=str(file_path.parent / filename),
+                    root_path=str(file_path.parent / name),
                     partition_cols=partition_cols,
-                    compression=compression
+                    **write_options
                 )
             else:
-                pq.write_table(
-                    table,
-                    file_path,
-                    compression=compression,
-                    use_dictionary=True,
-                    compression_level=None if compression == 'snappy' else 9
-                )
+                pq.write_table(table, file_path, **write_options)
             
-            self.logger.info(f"Successfully saved DataFrame to {file_path}")
-            return file_path
+            elapsed = time.time() - start_time
+            self.logger.info(
+                f"Saved {len(df)} rows to {file_path} in {elapsed:.2f} seconds "
+                f"(compression={compression})"
+            )
+            return str(file_path)
             
         except Exception as e:
-            self.logger.error(f"Failed to save DataFrame: {e}")
+            self.logger.error(f"Error saving DataFrame to Parquet: {e}")
             raise
     
     def read_dataframe(self, 
-                      filename: str,
-                      columns: Optional[list] = None,
-                      filters: Optional[list] = None) -> pd.DataFrame:
+                      name: str, 
+                      columns: Optional[List[str]] = None,
+                      filters: Optional[List[tuple]] = None) -> pd.DataFrame:
         """
-        Read Parquet file into DataFrame with optimized settings.
+        Read DataFrame from Parquet format with optimizations.
         
         Args:
-            filename: Name of the file (without .parquet extension)
-            columns: List of columns to read
-            filters: List of filters to apply during reading
+            name: Base name of the file
+            columns: Specific columns to read
+            filters: PyArrow filters to apply during read
             
         Returns:
-            pd.DataFrame: Loaded DataFrame
+            pd.DataFrame: The loaded DataFrame
         """
         try:
-            file_path = self.base_path / f"{filename}.parquet"
+            start_time = time.time()
+            file_path = self.get_parquet_path(name)
             
-            if not file_path.exists():
-                raise FileNotFoundError(f"Parquet file not found: {file_path}")
-            
-            # Read using PyArrow for better performance
-            table = pq.read_table(
-                file_path,
-                columns=columns,
-                filters=filters,
-                use_threads=True
-            )
+            # Check if it's a partitioned dataset
+            if (file_path.parent / name).is_dir():
+                dataset = pq.ParquetDataset(
+                    file_path.parent / name,
+                    filters=filters,
+                    use_legacy_dataset=False
+                )
+                table = dataset.read(columns=columns)
+            else:
+                table = pq.read_table(
+                    file_path,
+                    columns=columns,
+                    filters=filters
+                )
             
             df = table.to_pandas()
-            self.logger.info(f"Successfully read DataFrame from {file_path}")
+            
+            elapsed = time.time() - start_time
+            self.logger.info(
+                f"Read {len(df)} rows from {file_path} in {elapsed:.2f} seconds"
+            )
             return df
             
         except Exception as e:
-            self.logger.error(f"Failed to read DataFrame: {e}")
+            self.logger.error(f"Error reading DataFrame from Parquet: {e}")
             raise
     
-    def append_to_dataframe(self,
-                          df: pd.DataFrame,
-                          filename: str,
-                          compression: str = 'snappy') -> None:
+    def get_parquet_metadata(self, name: str) -> Dict[str, Any]:
         """
-        Append data to existing Parquet file.
+        Get metadata for a Parquet file.
         
         Args:
-            df: DataFrame to append
-            filename: Name of the file (without .parquet extension)
-            compression: Compression codec
-        """
-        try:
-            file_path = self.base_path / f"{filename}.parquet"
-            
-            if file_path.exists():
-                # Read existing data
-                existing_df = self.read_dataframe(filename)
-                # Combine with new data
-                combined_df = pd.concat([existing_df, df], ignore_index=True)
-            else:
-                combined_df = df
-            
-            # Save combined data
-            self.save_dataframe(combined_df, filename, compression)
-            self.logger.info(f"Successfully appended data to {file_path}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to append data: {e}")
-            raise
-    
-    def get_parquet_metadata(self, filename: str) -> Dict[str, Any]:
-        """
-        Get metadata information about a Parquet file.
-        
-        Args:
-            filename: Name of the file (without .parquet extension)
+            name: Base name of the file
             
         Returns:
             Dict containing metadata information
         """
         try:
-            file_path = self.base_path / f"{filename}.parquet"
+            file_path = self.get_parquet_path(name)
             
-            if not file_path.exists():
-                raise FileNotFoundError(f"Parquet file not found: {file_path}")
+            # Handle both partitioned and non-partitioned data
+            if (file_path.parent / name).is_dir():
+                dataset = pq.ParquetDataset(file_path.parent / name)
+                metadata = dataset.metadata
+                file_path = file_path.parent / name
+            else:
+                metadata = pq.read_metadata(file_path)
             
-            parquet_file = pq.ParquetFile(file_path)
-            metadata = {
-                'num_rows': parquet_file.metadata.num_rows,
-                'num_columns': parquet_file.metadata.num_columns,
-                'created_by': parquet_file.metadata.created_by,
-                'schema': parquet_file.schema.to_string(),
-                'size_bytes': file_path.stat().st_size,
-                'last_modified': file_path.stat().st_mtime
+            return {
+                'num_rows': metadata.num_rows,
+                'num_columns': metadata.num_columns,
+                'created_by': metadata.created_by,
+                'last_modified': file_path.stat().st_mtime,
+                'size_bytes': file_path.stat().st_size
             }
             
-            return metadata
+        except Exception as e:
+            self.logger.error(f"Error reading Parquet metadata: {e}")
+            raise
+    
+    def delete_parquet(self, name: str) -> bool:
+        """
+        Delete a Parquet file or dataset.
+        
+        Args:
+            name: Base name of the file
+            
+        Returns:
+            bool: True if deletion was successful
+        """
+        try:
+            file_path = self.get_parquet_path(name)
+            dataset_path = file_path.parent / name
+            
+            # Handle both partitioned and non-partitioned data
+            if dataset_path.is_dir():
+                import shutil
+                shutil.rmtree(dataset_path)
+                self.logger.info(f"Deleted partitioned dataset at {dataset_path}")
+            elif file_path.exists():
+                file_path.unlink()
+                self.logger.info(f"Deleted file at {file_path}")
+            
+            return True
             
         except Exception as e:
-            self.logger.error(f"Failed to get metadata: {e}")
-            raise 
+            self.logger.error(f"Error deleting Parquet data: {e}")
+            return False 
