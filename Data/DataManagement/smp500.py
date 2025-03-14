@@ -58,8 +58,6 @@ class SavePath:
                 self.name,
                 compression='snappy'
             ))
-        
-        raise TypeError(f"Data type {type(data)} not supported for saving")
 
 class Smp500Tickers:
     """Manages S&P 500 ticker data and stock information fetching"""

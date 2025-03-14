@@ -7,12 +7,10 @@ import logging
 import math
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Union, List, Any
-
-# Added missing imports (preserving existing ones)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 from pandas import Timestamp
-
+from rich.progress import Progress
 import pandas as pd
 from cachetools import LRUCache
 import glob
@@ -3105,11 +3103,9 @@ class Ranking:
             self.save_rankings([])
             return []
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         rankings = []
         with ThreadPoolExecutor(max_workers=16) as executor:
             futures = {executor.submit(self._process_ticker, t): t for t in tickers}
-            from rich.progress import Progress
             with Progress() as progress:
                 task = progress.add_task("[cyan]Ranking Tickers", total=len(futures))
                 for future in as_completed(futures):
