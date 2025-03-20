@@ -52,8 +52,8 @@ def get_project_root() -> Path:
     for parent in current_file.parents:
         if (parent / '.git').exists():
             return parent
-        # Check for either project name format
-        if parent.name in ['Financial-Trading-Algorithm', 'Financial-Trading-Algorithm-progress-updated']:
+        # More flexible matching for different branch/repo names
+        if any(name in parent.name for name in ['Financial-Trading-Algorithm', 'Financial-Trading-Algorithm-progress-updated']):
             return parent
     print("Could not find project root directory")
     raise FileNotFoundError("Could not find project root directory")
