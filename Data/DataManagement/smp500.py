@@ -233,5 +233,9 @@ def main():
     smp500 = Smp500Tickers()
     smp500.main(force_refresh=False)  # Set to True to force refresh all data
 
+def update_data():
+    smp500 = Smp500Tickers()
+    smp500.main(force_refresh=False)  # Set to True to force refresh all data
+
 if __name__ == "__main__":
     main()

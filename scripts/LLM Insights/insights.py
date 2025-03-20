@@ -29,7 +29,6 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.table import Table
 from loading import DynamicLoadingBar
-from Data.DataManagement.parquet_handler import ParquetHandler  # Add this import
 import json
 from openai import OpenAI
 import asyncio
@@ -60,6 +59,9 @@ def get_project_root() -> Path:
 
 # Set up project paths
 PROJECT_ROOT = get_project_root()
+# Add project root to Python path so we can import modules
+sys.path.insert(0, str(PROJECT_ROOT))
+
 DATA_PATH = PROJECT_ROOT / 'Data'
 CONVERSION_PATH = DATA_PATH / 'Conversations'
 STOCK_DATA_PATH = DATA_PATH / 'Stock-Data'
@@ -69,9 +71,9 @@ PORTFOLIO_PATH = DATA_PATH / 'Databases' / 'Portfolio'
 TICKERS_PATH = DATA_PATH / 'Info' / 'Tickers'
 RANKING_PATH = DATA_PATH / 'Rankings'
 
-# Add Data Management to system path
-sys.path.append(str(PROJECT_ROOT))
-from Data.DataManagement.maintenance import update_data
+from Data.DataManagement.smp500 import update_data
+# Now import modules that require the project root in the path
+from Data.DataManagement.parquet_handler import ParquetHandler  # Add this import
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
