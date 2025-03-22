@@ -455,12 +455,36 @@ class Perplexity:
 
 class StockData:
     def __init__(self):
-        self.data_path = STOCK_DATA_PATH
-        self.parquet_handler = ParquetHandler(self.data_path)
-        self.maintain_stock_data()
-        self.stock_data = self.read_stock_data()  
-        self.tickers = list(self.stock_data.keys())
-            
+        from pathlib import Path
+        import os
+        # ... existing code ...
+        self.data_path = Path(os.getenv('DATA_PATH', './data'))
+        from Data.DataManagement.historical_daily_loader import EODHDHistoricalClient
+        from Data.DataManagement.parquet_handler import ParquetHandler
+        import pytz
+        from datetime import datetime, time
+        import json
+        
+        # Add client for EODHD data
+        api_key = os.environ.get("EODHD_API_KEY")
+        if api_key:
+            self.eodhd_client = EODHDHistoricalClient(api_key, self.data_path)
+            self.parquet_handler = ParquetHandler(self.data_path)
+        
+        # Initialize stock data
+        try:
+            # Import here to avoid circular import issues
+            from update_controller import run_update
+            # Use update controller for more robust update control
+            run_update(self, force=False, ignore_time=False)
+        except ImportError:
+            # Fall back to direct method call if controller not available
+            self.maintain_stock_data(force=False, ignore_time=False)
+        
+        # Read stock data after the update
+        self.stock_data = self.read_stock_data()
+        self.tickers = list(self.stock_data.keys()) if hasattr(self, 'stock_data') else []
+        
         loading_bar.dynamic_update("Stock data initialization complete", operation="StockData.__init__")
 
     def get_stock_data(self, tickers):
@@ -523,28 +547,132 @@ class StockData:
             logging.error(f"Error reading stock data: {e}")
             return {}
 
-    def maintain_stock_data(self) -> Optional[bool]:
-        loading_bar.dynamic_update("Maintaining stock data", operation="maintain_stock_data")
+    def is_market_closed(self):
         """
-        Run update_data() from the Data Management module.
+        Check if US market is closed (after 4pm ET on weekdays)
+        Returns: 
+            tuple: (is_closed, reason)
+        """
+        # Get current time in ET
+        et_zone = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et_zone)
+        
+        # Check if weekend
+        if now_et.weekday() >= 5:  # 5=Saturday, 6=Sunday
+            return True, "Weekend"
+        
+        # Check if before market open (9:30am ET) or after market close (4:00pm ET)
+        market_open = time(9, 30, 0)
+        market_close = time(16, 0, 0)
+        
+        if now_et.time() < market_open:
+            return True, "Before market open"
+        elif now_et.time() >= market_close:
+            return True, "After market close"
+        
+        # Market is open
+        return False, "Market is open"
+
+    def was_updated_today(self):
+        """
+        Check if data was already updated today
         
         Returns:
-            Optional[bool]: True if update was successful, False if an error occurred, None if update_data() doesn't return a status.
+            bool: True if updated today, False otherwise
         """
-        try:
-            logging.info("Starting data update process")
-            result = update_data()
-            logging.info("Data update process completed")
-            loading_bar.dynamic_update("Maintenance complete", operation="maintain_stock_data")
-            return result if isinstance(result, bool) else None
-        except ImportError as e:
-            logging.error(f"Failed to import update_data: {e}")
+        last_update_file = self.data_path / "last_update.json"
+        
+        if not last_update_file.exists():
             return False
+        
+        try:
+            with open(last_update_file, 'r') as f:
+                last_update = json.load(f)
+            
+            last_update_date = datetime.fromisoformat(last_update.get('date', '2000-01-01'))
+            today = datetime.now().date()
+            
+            return last_update_date.date() == today
         except Exception as e:
-            logging.error(f"An error occurred during data update: {e}")
+            print(f"Error checking last update: {e}")
             return False
 
-    # New method to check if ticker data is updated
+    def record_update(self):
+        """
+        Record that data was updated today
+        """
+        last_update_file = self.data_path / "last_update.json"
+        
+        try:
+            with open(last_update_file, 'w') as f:
+                json.dump({
+                    'date': datetime.now().isoformat(),
+                    'status': 'success'
+                }, f)
+        except Exception as e:
+            print(f"Error recording update: {e}")
+
+    def maintain_stock_data(self, force: bool = False, ignore_time: bool = False) -> Optional[bool]:
+        """
+        Update stock data with the latest values, respecting market hours
+        
+        Args:
+            force: Whether to force update even if already updated today
+            ignore_time: Whether to ignore market hours check
+        
+        Returns:
+            bool: True if update was performed, False if not needed, None if error
+        """
+        loading_bar.dynamic_update("Maintaining stock data", operation="maintain_stock_data")
+        
+        # Check API key
+        import os
+        api_key = os.environ.get("EODHD_API_KEY")
+        if not api_key:
+            logging.warning("No EODHD API key found in environment variables")
+            loading_bar.dynamic_update("No API key found", operation="maintain_stock_data")
+            return None
+            
+        # Check if we have a client
+        if not hasattr(self, 'eodhd_client'):
+            self.eodhd_client = EODHDHistoricalClient(api_key, self.data_path)
+        
+        # Check if market is closed and data hasn't been updated today
+        should_update = True
+        reason = ""
+        
+        if not ignore_time:
+            market_closed, market_reason = self.is_market_closed()
+            if not market_closed:
+                reason = f"Market is still open ({market_reason})"
+                should_update = False
+        
+        if should_update and not force:
+            already_updated = self.was_updated_today()
+            if already_updated:
+                reason = "Data has already been updated today"
+                should_update = False
+        
+        if not should_update:
+            logging.info(f"Data update skipped: {reason}")
+            loading_bar.dynamic_update(f"Update skipped: {reason}", operation="maintain_stock_data")
+            return False
+        
+        try:
+            # Update using bulk API
+            logging.info("Starting data update...")
+            loading_bar.dynamic_update("Performing data update", operation="maintain_stock_data")
+            self.eodhd_client.bulk_update_daily_data()
+            self.record_update()
+            logging.info("Data update completed successfully")
+            loading_bar.dynamic_update("Data update completed successfully", operation="maintain_stock_data")
+            return True
+        except Exception as e:
+            error_msg = f"Error updating stock data: {e}"
+            logging.error(error_msg)
+            loading_bar.dynamic_update(f"Update error: {str(e)[:50]}...", operation="maintain_stock_data")
+            return None
+
     def is_data_recent(self, ticker: str, tolerance_days: int = 1) -> bool:
         data = self.get_stock_data([ticker]).get(ticker)
         if data is None or data.empty:
@@ -553,6 +681,43 @@ class StockData:
         last_date = data.index.max().normalize()
         current_date = pd.Timestamp.today().normalize()
         return (current_date - last_date).days <= tolerance_days
+
+    def update_data(self, force: bool = False, ignore_time: bool = False) -> Tuple[bool, str]:
+        """
+        Update stock data using the update controller (recommended method)
+        
+        Args:
+            force: Whether to force update even if already updated today
+            ignore_time: Whether to ignore market hours check
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        try:
+            # Import here to avoid circular import issues
+            from update_controller import run_update
+            # Use update controller for more robust update handling
+            success, message = run_update(self, force=force, ignore_time=ignore_time)
+            
+            # Refresh data in memory if update was successful
+            if success:
+                self.stock_data = self.read_stock_data()
+                self.tickers = list(self.stock_data.keys())
+                
+            return success, message
+        except ImportError as e:
+            # Fall back to direct method call if controller not available
+            logging.warning(f"Update controller not available: {e}")
+            result = self.maintain_stock_data(force=force, ignore_time=ignore_time)
+            
+            # Refresh data in memory if update was successful
+            if result:
+                self.stock_data = self.read_stock_data()
+                self.tickers = list(self.stock_data.keys())
+                
+            success = result is True
+            message = "Update successful" if success else "Update skipped or failed"
+            return success, message
 
 class Ollama:
     def __init__(self):
