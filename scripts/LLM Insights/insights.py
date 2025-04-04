@@ -367,7 +367,6 @@ class Perplexity:
             self.tests += 1
             valid = False
 
-        # Check and adjust max_tokens if out of range
         if not (10 <= max_tokens <= 1000000):
             print(f"Validation {self.tests}: FAIL - Max tokens {max_tokens} out of range. Setting to default value 300.")
             max_tokens = 300
